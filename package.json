@@ -1,0 +1,16 @@
+{
+  "name": "repl-bot",
+  "version": "1.0.0",
+  "description": "Repl Discord Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "mongoose": "^8.3.4",
+    "dotenv": "^16.4.5",
+    "nanoid": "^3.3.7"
+  }
+}
