@@ -45,7 +45,7 @@ async function addXp(userId, guildId, guildData, client) {
   const xpGain = Math.floor(Math.random() * ((guildData.xpMax || 25) - (guildData.xpMin || 15) + 1)) + (guildData.xpMin || 15);
   let userData = await User.findOneAndUpdate(
     { userId, guildId },
-    { $inc: { xp: xpGain } },
+    { $inc: { xp: xpGain }, $setOnInsert: { userId, guildId } },
     { upsert: true, new: true }
   );
 
