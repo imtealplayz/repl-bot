@@ -20,10 +20,12 @@ function registerEvents(client) {
 
   client.on(Events.MessageCreate, async (message) => {
     if (message.author.bot || !message.guild) return;
+    try {
 
     const guildId   = message.guild.id;
     const userId    = message.author.id;
-    const guildData = await getGuild(guildId);
+    const guildData = await getGuild(guildId).catch(() => null);
+    if (!guildData) return;
 
     // ── Ticket transcript recording ──────────────────────────────────────────
     const ticket = await Ticket.findOne({ channelId: message.channelId, status: 'open' });
@@ -89,6 +91,10 @@ function registerEvents(client) {
           guildMember.roles.add(reward.roleId).catch(() => {});
         }
       }
+    }
+
+    } catch (err) {
+      console.error('MessageCreate error (non-fatal):', err.message);
     }
   });
 
