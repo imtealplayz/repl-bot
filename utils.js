@@ -33,8 +33,19 @@ function canActOn(executor, target) {
   return true;
 }
 
-// ─── XP / Leveling ───────────────────────────────────────────────────────────
-function xpForLevel(level) { return Math.floor(100 * Math.pow(level, 1.5)); }
+// ─── XP / Leveling (Arcane formula) ──────────────────────────────────────────
+// XP needed to reach level N = 5*(N^2) + 50*N + 100
+function xpForLevel(level) {
+  if (level <= 0) return 0;
+  return 5 * Math.pow(level, 2) + 50 * level + 100;
+}
+
+// Total XP needed from level 0 to reach level N
+function totalXpForLevel(level) {
+  let total = 0;
+  for (let i = 1; i <= level; i++) total += xpForLevel(i);
+  return total;
+}
 
 function progressBar(current, needed, size = 10) {
   const filled = Math.round((current / needed) * size);
@@ -42,7 +53,9 @@ function progressBar(current, needed, size = 10) {
 }
 
 async function addXp(userId, guildId, guildData, client) {
-  const xpGain = Math.floor(Math.random() * ((guildData.xpMax || 25) - (guildData.xpMin || 15) + 1)) + (guildData.xpMin || 15);
+  const min    = guildData.xpMin || 15;
+  const max    = guildData.xpMax || 40;
+  const xpGain = Math.floor(Math.random() * (max - min + 1)) + min;
   let userData = await User.findOneAndUpdate(
     { userId, guildId },
     { $inc: { xp: xpGain }, $setOnInsert: { userId, guildId } },
@@ -359,13 +372,58 @@ function paginate(array, page, perPage = 5) {
   return { items, total, page };
 }
 
+// ─── Profanity / Slur Filter ──────────────────────────────────────────────────
+const BLOCKED_WORDS = [
+  'nigger','nigga','faggot','fag','chink','spic','kike','gook','wetback',
+  'tranny','retard','cunt','whore','slut','bitch','bastard','asshole',
+  'shit','fuck','fuck','piss','cock','dick','pussy','ass','damn','crap',
+  'motherfucker','fucker','shithead','dipshit','jackass','dumbass',
+  'nazi','hitler','kkk',
+];
+
+function containsProfanity(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+  return BLOCKED_WORDS.some(w => lower.split(/\s+/).includes(w) || lower.includes(w));
+}
+
+// ─── Suggestion code generator ────────────────────────────────────────────────
+function genSuggestionCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  return Array.from({ length: 3 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+}
+
+// ─── Build ticket transcript buffer ───────────────────────────────────────────
+function buildTranscript(ticket) {
+  const lines = [
+    `Ticket ID:   ${ticket.ticketId}`,
+    `Type:        ${ticket.type}`,
+    `Opened by:   ${ticket.userId}`,
+    `Status:      ${ticket.status}`,
+    `Created:     ${new Date(ticket.createdAt).toISOString()}`,
+    ticket.closedAt ? `Closed:      ${new Date(ticket.closedAt).toISOString()}` : '',
+    '',
+    '─── Form Responses ───────────────────────────────────',
+    ...Object.entries(ticket.modalFields || {}).map(([k, v]) =>
+      `${k.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}: ${v}`
+    ),
+    '',
+    '─── Messages ─────────────────────────────────────────',
+    ...ticket.transcript.map(m =>
+      `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}${m.attachments?.length ? ' [Files: ' + m.attachments.join(', ') + ']' : ''}`
+    ),
+  ].filter(l => l !== undefined);
+  return Buffer.from(lines.join('\n'), 'utf-8');
+}
+
 module.exports = {
   makeEmbed, successEmbed, errorEmbed, warningEmbed, infoEmbed,
   isOwner, hasAdmin, hasModPerms, hasBanPerms, hasKickPerms, canActOn,
-  xpForLevel, progressBar, addXp,
+  xpForLevel, totalXpForLevel, progressBar, addXp,
   resolveVars, buildWelcomeEmbed,
   genGiveawayId, parseDuration, formatDuration,
   getEntryCount, checkRaid, checkNuke,
   startGiveawayScheduler, endGiveaway,
   getGuild, logMod, paginate,
+  containsProfanity, genSuggestionCode, buildTranscript,
 };
