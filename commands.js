@@ -432,69 +432,69 @@ async function handleCommand(interaction, client) {
     const needed   = xpForLevel(userData.level + 1);
     const allUsers = await User.find({ guildId }).sort({ level: -1, xp: -1 });
     const rank     = allUsers.findIndex(u => u.userId === target.id) + 1 || allUsers.length + 1;
-    try {
-      const { generateRankCard } = require('./rankCard');
-      const buffer = await generateRankCard({
-        username:     target.username,
-        avatarURL:    target.displayAvatarURL({ extension: 'png', size: 256 }),
-        level:        userData.level,
-        xp:           userData.xp,
-        xpNeeded:     needed,
-        rank:         rank,
-        messageCount: userData.messageCount,
-        accentColor:  '#7c3aed',
-      });
-      return interaction.editReply({ files: [{ attachment: buffer, name: 'level.png' }] });
-    } catch (e) {
-      // Fallback to embed if canvas fails
-      const bar   = progressBar(userData.xp, needed);
-      const embed = makeEmbed({
-        color: COLORS.PRIMARY,
-        title: `📊 ${target.username}'s Level`,
-        thumbnail: target.displayAvatarURL({ dynamic: true }),
-        fields: [
-          { name: '🏆 Rank',     value: `#${rank}`,                    inline: true },
-          { name: '⬆️ Level',    value: `${userData.level}`,           inline: true },
-          { name: '✉️ Messages', value: `${userData.messageCount.toLocaleString()}`, inline: true },
-          { name: '✨ XP',       value: `${userData.xp.toLocaleString()} / ${needed.toLocaleString()}`, inline: true },
-          { name: '📈 Progress', value: `\`${bar}\` ${Math.floor((userData.xp/needed)*100)}%` },
-        ],
-        timestamp: true,
-      });
-      return interaction.editReply({ embeds: [embed] });
-    }
+    const pct      = Math.floor((userData.xp / needed) * 100);
+
+    // Clean progress bar
+    const filled = Math.round((userData.xp / needed) * 12);
+    const bar    = '▰'.repeat(filled) + '▱'.repeat(12 - filled);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x9333ea)
+      .setAuthor({ name: `${target.username}'s Level`, iconURL: target.displayAvatarURL({ dynamic: true }) })
+      .setThumbnail(target.displayAvatarURL({ dynamic: true, size: 256 }))
+      .setDescription([
+        ``,
+        `\`\`\``,
+        `  Rank   #${rank}`,
+        `  Level  ${userData.level}`,
+        `  XP     ${userData.xp.toLocaleString()} / ${needed.toLocaleString()}`,
+        `\`\`\``,
+        `${bar}  **${pct}%**`,
+      ].join('\n'))
+      .addFields(
+        { name: '💬 Messages', value: `\`${userData.messageCount.toLocaleString()}\``, inline: true },
+        { name: '✨ XP to next', value: `\`${(needed - userData.xp).toLocaleString()}\``, inline: true },
+        { name: '🏆 Server Rank', value: `\`#${rank}\``, inline: true },
+      )
+      .setFooter({ text: `${guild.name}` })
+      .setTimestamp();
+
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /messages ──────────────────────────────────────────────────────────────
   if (commandName === 'messages') {
     await interaction.deferReply();
-    const target   = interaction.options.getUser('user') || user;
-    const userData = await User.findOne({ userId: target.id, guildId }) || { messageCount: 0 };
-    const allUsers = await User.find({ guildId }).sort({ messageCount: -1 });
-    const rank     = allUsers.findIndex(u => u.userId === target.id) + 1 || allUsers.length + 1;
-    try {
-      const { generateMessagesCard } = require('./rankCard');
-      const buffer = await generateMessagesCard({
-        username:     target.username,
-        avatarURL:    target.displayAvatarURL({ extension: 'png', size: 256 }),
-        messageCount: userData.messageCount,
-        rank:         rank,
-        accentColor:  '#4f8ef7',
-      });
-      return interaction.editReply({ files: [{ attachment: buffer, name: 'messages.png' }] });
-    } catch (e) {
-      const embed = makeEmbed({
-        color: COLORS.INFO,
-        title: `💬 ${target.username}'s Messages`,
-        thumbnail: target.displayAvatarURL({ dynamic: true }),
-        fields: [
-          { name: '💬 Messages', value: `${userData.messageCount.toLocaleString()}`, inline: true },
-          { name: '🏆 Rank',     value: `#${rank}`,                                  inline: true },
-        ],
-        timestamp: true,
-      });
-      return interaction.editReply({ embeds: [embed] });
-    }
+    const target    = interaction.options.getUser('user') || user;
+    const userData  = await User.findOne({ userId: target.id, guildId }) || { messageCount: 0 };
+    const allUsers  = await User.find({ guildId }).sort({ messageCount: -1 });
+    const rank      = allUsers.findIndex(u => u.userId === target.id) + 1 || allUsers.length + 1;
+    const topCount  = allUsers[0]?.messageCount || 1;
+    const pct       = Math.floor((userData.messageCount / topCount) * 100);
+    const filled    = Math.round((userData.messageCount / topCount) * 12);
+    const bar       = '▰'.repeat(filled) + '▱'.repeat(12 - filled);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x6366f1)
+      .setAuthor({ name: `${target.username}'s Messages`, iconURL: target.displayAvatarURL({ dynamic: true }) })
+      .setThumbnail(target.displayAvatarURL({ dynamic: true, size: 256 }))
+      .setDescription([
+        ``,
+        `\`\`\``,
+        `  Messages  ${userData.messageCount.toLocaleString()}`,
+        `  Rank      #${rank}`,
+        `\`\`\``,
+        `${bar}  **${pct}% of top**`,
+      ].join('\n'))
+      .addFields(
+        { name: '💬 Total Messages', value: `\`${userData.messageCount.toLocaleString()}\``, inline: true },
+        { name: '🏆 Server Rank',    value: `\`#${rank}\``,                                  inline: true },
+        { name: '📊 vs Top',         value: `\`${pct}%\``,                                   inline: true },
+      )
+      .setFooter({ text: `${guild.name}` })
+      .setTimestamp();
+
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /leaderboard ───────────────────────────────────────────────────────────
