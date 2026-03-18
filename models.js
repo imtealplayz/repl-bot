@@ -28,6 +28,24 @@ const afkSchema = new mongoose.Schema({
 });
 afkSchema.index({ userId: 1, guildId: 1 });
 
+// ─── Suggestion ───────────────────────────────────────────────────────────────
+const suggestionSchema = new mongoose.Schema({
+  code:       { type: String, required: true },
+  guildId:    { type: String, required: true },
+  userId:     { type: String, required: true },
+  content:    { type: String, required: true },
+  messageId:  { type: String, default: null },
+  channelId:  { type: String, default: null },
+  status:     { type: String, default: 'pending', enum: ['pending', 'approved', 'disapproved'] },
+  upvotes:    [String],
+  downvotes:  [String],
+  reason:     { type: String, default: null },
+  reviewedBy: { type: String, default: null },
+  createdAt:  { type: Date, default: Date.now },
+});
+suggestionSchema.index({ code: 1, guildId: 1 }, { unique: true });
+suggestionSchema.index({ userId: 1, guildId: 1 });
+
 // ─── Guild ────────────────────────────────────────────────────────────────────
 const welcomeEmbedSchema = new mongoose.Schema({
   enabled:       { type: Boolean, default: false },
@@ -66,6 +84,7 @@ const guildSchema = new mongoose.Schema({
   staffRoleId:           { type: String, default: null },
   ticketCategoryId:      { type: String, default: null },
   ticketLogChannelId:    { type: String, default: null },
+  ticketStaffRoleId:     { type: String, default: null },
   ticketPanel:           { type: ticketPanelSchema, default: () => ({}) },
   ticketTypes:           { type: Object, default: { support: true, report: true, claim: true, appeal: true, other: true } },
   ticketPingStaff:       { type: Boolean, default: true },
@@ -73,10 +92,13 @@ const guildSchema = new mongoose.Schema({
   ticketOnePerUser:      { type: Boolean, default: true },
   levelingEnabled:       { type: Boolean, default: true },
   levelUpMessages:       { type: Boolean, default: true },
+  levelUpChannelId:      { type: String, default: null },
+  levelUpDisabledChannels: [String],
   xpMin:                 { type: Number, default: 15 },
-  xpMax:                 { type: Number, default: 25 },
+  xpMax:                 { type: Number, default: 40 },
   xpCooldown:            { type: Number, default: 60 },
   levelRoles:            [{ level: Number, roleId: String }],
+  xpBlacklistedChannels: [String],
   msgLogMode:            { type: String, default: 'blacklist', enum: ['blacklist', 'whitelist'] },
   msgBlacklist:          [String],
   msgWhitelist:          [String],
@@ -96,6 +118,7 @@ const guildSchema = new mongoose.Schema({
   giveawayWhitelist:     [{ type: { type: String, enum: ['user','role'] }, id: String }],
   giveawayWhitelistMode: { type: Boolean, default: false },
   giveawayMaxEntries:    { type: Number, default: 100 },
+  suggestionChannelId:   { type: String, default: null },
   maintenanceMode:       { type: Boolean, default: false },
 }, { timestamps: true });
 
@@ -126,20 +149,25 @@ ticketSchema.index({ userId: 1, guildId: 1, type: 1, status: 1 });
 
 // ─── Giveaway ─────────────────────────────────────────────────────────────────
 const giveawaySchema = new mongoose.Schema({
-  giveawayId:   { type: String, required: true, unique: true },
-  guildId:      { type: String, required: true },
-  channelId:    { type: String, required: true },
-  messageId:    { type: String, default: null },
-  prize:        { type: String, required: true },
-  hostId:       { type: String, required: true },
-  endsAt:       { type: Date, required: true },
-  winnerCount:  { type: Number, default: 1 },
-  entries:      [String],
-  winners:      [String],
-  ended:        { type: Boolean, default: false },
-  bonusEntries: { type: Boolean, default: true },
-  maxEntries:   { type: Number, default: 100 },
-  bonusRoles:   [{ roleId: String, entries: Number }],
+  giveawayId:         { type: String, required: true, unique: true },
+  guildId:            { type: String, required: true },
+  channelId:          { type: String, required: true },
+  messageId:          { type: String, default: null },
+  prize:              { type: String, required: true },
+  hostId:             { type: String, required: true },
+  endsAt:             { type: Date, required: true },
+  winnerCount:        { type: Number, default: 1 },
+  entries:            [String],
+  winners:            [String],
+  ended:              { type: Boolean, default: false },
+  bonusEntries:       { type: Boolean, default: true },
+  maxEntries:         { type: Number, default: 100 },
+  bonusRoles:         [{ roleId: String, entries: Number }],
+  messageRequirement: { type: Number, default: 0 },
+  roleRequirement:    { type: String, default: null },
+  pingRoleId:         { type: String, default: null },
+  startedAt:          { type: Date, default: Date.now },
+  msgTracking:        { type: Object, default: {} },
 }, { timestamps: true });
 
 // ─── CustomCommand ────────────────────────────────────────────────────────────
@@ -158,4 +186,5 @@ module.exports = {
   Giveaway:      mongoose.model('Giveaway', giveawaySchema),
   CustomCommand: mongoose.model('CustomCommand', customCommandSchema),
   Afk:           mongoose.model('Afk', afkSchema),
+  Suggestion:    mongoose.model('Suggestion', suggestionSchema),
 };
