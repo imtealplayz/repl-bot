@@ -4,13 +4,14 @@ const {
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { OWNER_ID, COLORS, CMD_PREFIX } = require('./config');
-const { User, Guild, Ticket, Giveaway, CustomCommand, Afk } = require('./models');
+const { User, Guild, Ticket, Giveaway, CustomCommand, Afk, Suggestion } = require('./models');
 const {
   makeEmbed, successEmbed, errorEmbed, warningEmbed, infoEmbed,
   isOwner, hasAdmin, hasModPerms, hasBanPerms, hasKickPerms, canActOn,
-  xpForLevel, progressBar, addXp, resolveVars, buildWelcomeEmbed,
+  xpForLevel, totalXpForLevel, progressBar, addXp, resolveVars, buildWelcomeEmbed,
   genGiveawayId, parseDuration, formatDuration,
   getEntryCount, endGiveaway, getGuild, logMod, paginate,
+  containsProfanity, genSuggestionCode, buildTranscript,
 } = require('./utils');
 const { nanoid } = require('nanoid');
 
@@ -167,12 +168,56 @@ const commandDefs = [
     .addBooleanOption(o => o.setName('allservers').setDescription('Set AFK across all servers')),
 
   // Tickets
-  new SlashCommandBuilder().setName('ticketpanel').setDescription('Send the ticket panel (owner only)'),
+  new SlashCommandBuilder().setName('ticketpanel').setDescription('Send the ticket panel'),
   new SlashCommandBuilder().setName('close').setDescription('Close the current ticket'),
+  new SlashCommandBuilder().setName('reopen').setDescription('Reopen a closed ticket'),
+  new SlashCommandBuilder().setName('delete').setDescription('Delete the current ticket'),
+  new SlashCommandBuilder().setName('transcript').setDescription('Get transcript of current ticket'),
+  new SlashCommandBuilder().setName('add').setDescription('Add a user to the current ticket')
+    .addUserOption(o => o.setName('user').setDescription('User to add').setRequired(true)),
+  new SlashCommandBuilder().setName('remove').setDescription('Remove a user from the current ticket')
+    .addUserOption(o => o.setName('user').setDescription('User to remove').setRequired(true)),
+  new SlashCommandBuilder().setName('ticket').setDescription('Ticket configuration')
+    .addSubcommand(s => s.setName('staffrole').setDescription('Set the ticket staff role')
+      .addRoleOption(o => o.setName('role').setDescription('Staff role').setRequired(true))),
   new SlashCommandBuilder().setName('setticketlogs').setDescription('Set ticket log channel')
     .addChannelOption(o => o.setName('channel').setDescription('Log channel').setRequired(true)),
-  new SlashCommandBuilder().setName('setstaffrole').setDescription('Set the staff role')
-    .addRoleOption(o => o.setName('role').setDescription('Staff role').setRequired(true)),
+
+  // Leveling extras
+  new SlashCommandBuilder().setName('levelup').setDescription('Configure level up messages')
+    .addSubcommand(s => s.setName('channel').setDescription('Set dedicated level up channel')
+      .addChannelOption(o => o.setName('channel').setDescription('Channel for level up messages').setRequired(true)))
+    .addSubcommand(s => s.setName('disable').setDescription('Disable level up messages in current channel')),
+
+  new SlashCommandBuilder().setName('blacklist').setDescription('Manage blacklists')
+    .addSubcommand(s => s.setName('level').setDescription('Blacklist a channel from XP gain')
+      .addChannelOption(o => o.setName('channel').setDescription('Channel to blacklist').setRequired(true)))
+    .addSubcommand(s => s.setName('list').setDescription('View all blacklisted XP channels')),
+
+  new SlashCommandBuilder().setName('whitelist').setDescription('Manage whitelists')
+    .addSubcommand(s => s.setName('level').setDescription('Remove a channel from XP blacklist')
+      .addChannelOption(o => o.setName('channel').setDescription('Channel to whitelist').setRequired(true))),
+
+  // Suggestions
+  new SlashCommandBuilder().setName('suggest').setDescription('Submit a suggestion')
+    .addStringOption(o => o.setName('idea').setDescription('Your suggestion or idea').setRequired(true)),
+
+  new SlashCommandBuilder().setName('suggestion').setDescription('Manage suggestions')
+    .addSubcommand(s => s.setName('channel').setDescription('Set the suggestion channel')
+      .addChannelOption(o => o.setName('channel').setDescription('Suggestion channel').setRequired(true)))
+    .addSubcommand(s => s.setName('approve').setDescription('Approve a suggestion')
+      .addStringOption(o => o.setName('code').setDescription('3-letter suggestion code').setRequired(true))
+      .addStringOption(o => o.setName('reason').setDescription('Reason for approval')))
+    .addSubcommand(s => s.setName('disapprove').setDescription('Disapprove a suggestion')
+      .addStringOption(o => o.setName('code').setDescription('3-letter suggestion code').setRequired(true))
+      .addStringOption(o => o.setName('reason').setDescription('Reason for disapproval'))),
+
+  // Role management
+  new SlashCommandBuilder().setName('role').setDescription('Role management')
+    .addSubcommand(s => s.setName('everyone').setDescription('Add or remove a role from everyone')
+      .addStringOption(o => o.setName('action').setDescription('add or remove').setRequired(true)
+        .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }))
+      .addRoleOption(o => o.setName('role').setDescription('Role to add/remove').setRequired(true))),
 
   // Welcome
   new SlashCommandBuilder().setName('welcome').setDescription('Set the welcome channel')
@@ -211,7 +256,13 @@ const commandDefs = [
       .addStringOption(o => o.setName('duration').setDescription('Duration e.g. 1h, 2d').setRequired(true))
       .addIntegerOption(o => o.setName('winners').setDescription('Number of winners').setMinValue(1).setMaxValue(10))
       .addChannelOption(o => o.setName('channel').setDescription('Channel for giveaway'))
-      .addBooleanOption(o => o.setName('bonusentries').setDescription('Apply bonus entries? (default true)')))
+      .addBooleanOption(o => o.setName('bonusentries').setDescription('Apply bonus entries? (default true)'))
+      .addIntegerOption(o => o.setName('messagerequirement').setDescription('Min messages after giveaway starts to be eligible').setMinValue(1))
+      .addRoleOption(o => o.setName('rolerequirement').setDescription('Role required to enter'))
+      .addRoleOption(o => o.setName('pingrole').setDescription('Role to ping when giveaway starts')))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove a user from a giveaway')
+      .addStringOption(o => o.setName('id').setDescription('Giveaway ID e.g. GIV-AB12').setRequired(true))
+      .addUserOption(o => o.setName('user').setDescription('User to remove').setRequired(true)))
     .addSubcommand(s => s.setName('entries').setDescription('Manage bonus entries')
       .addStringOption(o => o.setName('action').setDescription('add, remove or list').setRequired(true)
         .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }))
@@ -597,6 +648,11 @@ async function handleCommand(interaction, client) {
   if (commandName === 'afk') {
     const reason    = interaction.options.getString('reason') || 'AFK';
     const allGuilds = interaction.options.getBoolean('allservers') || false;
+    const BLOCKED   = ['nigger','nigga','faggot','fag','chink','spic','kike','gook','wetback','retard','tranny','cunt','whore','bitch','bastard','asshole','fuck','shit','cock','dick','pussy','slut'];
+    const lowerReason = reason.toLowerCase();
+    if (BLOCKED.some(w => lowerReason.includes(w))) {
+      return interaction.reply({ embeds: [errorEmbed('Your AFK reason contains inappropriate language.')], ephemeral: true });
+    }
     if (allGuilds) {
       await Afk.deleteMany({ userId: user.id });
       await Afk.create({ userId: user.id, guildId: null, reason, allGuilds: true });
@@ -605,11 +661,19 @@ async function handleCommand(interaction, client) {
       await Afk.create({ userId: user.id, guildId, reason, allGuilds: false });
     }
     return interaction.reply({
-      embeds: [new EmbedBuilder()
-        .setColor(COLORS.INFO)
-        .setDescription(`💤 You are now AFK: **${reason}**${allGuilds ? ' *(all servers)*' : ''}`)
-      ]
+      embeds: [new EmbedBuilder().setColor(COLORS.INFO).setDescription(`💤 You are now AFK: **${reason}**${allGuilds ? ' *(all servers)*' : ''}`)]
     });
+  }
+
+  // ── /ticket staffrole ──────────────────────────────────────────────────────
+  if (commandName === 'ticket') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'staffrole') {
+      if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+      const role = interaction.options.getRole('role');
+      await Guild.findOneAndUpdate({ guildId }, { ticketStaffRoleId: role.id, staffRoleId: role.id });
+      return interaction.reply({ embeds: [successEmbed(`Ticket staff role set to ${role}.`)] });
+    }
   }
 
   // ── /ticketpanel ───────────────────────────────────────────────────────────
@@ -632,14 +696,85 @@ async function handleCommand(interaction, client) {
 
   // ── /close ─────────────────────────────────────────────────────────────────
   if (commandName === 'close') {
-    const ticket = await Ticket.findOne({ channelId: interaction.channelId, status: 'open' });
-    if (!ticket) return interaction.reply({ embeds: [errorEmbed('This is not an open ticket channel.')], ephemeral: true });
+    const ticket  = await Ticket.findOne({ channelId: interaction.channelId, status: 'open' });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('No open ticket found in this channel.')], ephemeral: true });
     const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
     if (ticket.userId !== user.id && !isStaff && !isOwner(user.id)) {
       return interaction.reply({ embeds: [errorEmbed('Only the ticket creator or staff can close this ticket.')], ephemeral: true });
     }
-    await closeTicket(ticket, interaction.channel, guild, guildData, client, user);
+    await Ticket.findOneAndUpdate({ ticketId: ticket.ticketId }, { status: 'closed', closedAt: new Date() });
+    await interaction.channel.permissionOverwrites.edit(ticket.userId, { ViewChannel: false }).catch(() => {});
+    const reopenRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Reopen').setEmoji('🔓').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('ticket_transcript_btn').setLabel('Transcript').setEmoji('📄').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_delete_btn').setLabel('Delete').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+    );
+    await interaction.reply({ embeds: [makeEmbed({ color: COLORS.WARNING, description: `🔒 Ticket closed by <@${user.id}>.` })], components: [reopenRow] });
+    await sendTicketLog(ticket, guild, guildData, client, user, 'closed');
     return;
+  }
+
+  // ── /reopen ────────────────────────────────────────────────────────────────
+  if (commandName === 'reopen') {
+    const ticket  = await Ticket.findOne({ channelId: interaction.channelId, status: 'closed' });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('No closed ticket found in this channel.')], ephemeral: true });
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can reopen tickets.')], ephemeral: true });
+    await Ticket.findOneAndUpdate({ ticketId: ticket.ticketId }, { status: 'open' });
+    await interaction.channel.permissionOverwrites.edit(ticket.userId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => {});
+    const ticketRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_transcript_btn').setLabel('Transcript').setEmoji('📄').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_delete_btn').setLabel('Delete').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+    );
+    return interaction.reply({ embeds: [successEmbed(`🔓 Ticket reopened by <@${user.id}>.`)], components: [ticketRow] });
+  }
+
+  // ── /delete (ticket) ───────────────────────────────────────────────────────
+  if (commandName === 'delete') {
+    const ticket  = await Ticket.findOne({ channelId: interaction.channelId });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('No ticket found in this channel.')], ephemeral: true });
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can delete tickets.')], ephemeral: true });
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_delete_confirm').setLabel('Yes, Delete').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('ticket_delete_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.reply({ embeds: [warningEmbed('Are you sure you want to **permanently delete** this ticket?')], components: [confirmRow] });
+  }
+
+  // ── /transcript ────────────────────────────────────────────────────────────
+  if (commandName === 'transcript') {
+    const ticket  = await Ticket.findOne({ channelId: interaction.channelId });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('No ticket found in this channel.')], ephemeral: true });
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can generate transcripts.')], ephemeral: true });
+    const lines  = buildTranscriptLines(ticket);
+    const buffer = Buffer.from(lines, 'utf-8');
+    return interaction.reply({ embeds: [infoEmbed(`📄 Transcript for \`${ticket.ticketId}\``)], files: [{ attachment: buffer, name: `transcript-${ticket.ticketId}.txt` }], ephemeral: true });
+  }
+
+  // ── /add (ticket) ──────────────────────────────────────────────────────────
+  if (commandName === 'add') {
+    const ticket = await Ticket.findOne({ channelId: interaction.channelId, status: 'open' });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('This is not an active ticket channel.')], ephemeral: true });
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can add users to tickets.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    await interaction.channel.permissionOverwrites.edit(target.id, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true }).catch(() => {});
+    return interaction.reply({ embeds: [successEmbed(`<@${target.id}> has been added to this ticket.`)] });
+  }
+
+  // ── /remove (ticket) ───────────────────────────────────────────────────────
+  if (commandName === 'remove') {
+    const ticket = await Ticket.findOne({ channelId: interaction.channelId, status: 'open' });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('This is not an active ticket channel.')], ephemeral: true });
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can remove users from tickets.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    if (target.id === ticket.userId) return interaction.reply({ embeds: [errorEmbed('You cannot remove the ticket creator.')], ephemeral: true });
+    await interaction.channel.permissionOverwrites.edit(target.id, { ViewChannel: false }).catch(() => {});
+    return interaction.reply({ embeds: [successEmbed(`<@${target.id}> has been removed from this ticket.`)] });
   }
 
   // ── /setticketlogs ─────────────────────────────────────────────────────────
@@ -650,12 +785,159 @@ async function handleCommand(interaction, client) {
     return interaction.reply({ embeds: [successEmbed(`Ticket logs will be sent to ${ch}.`)] });
   }
 
-  // ── /setstaffrole ──────────────────────────────────────────────────────────
-  if (commandName === 'setstaffrole') {
-    if (!hasAdmin(member)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
-    const role = interaction.options.getRole('role');
-    await Guild.findOneAndUpdate({ guildId }, { staffRoleId: role.id });
-    return interaction.reply({ embeds: [successEmbed(`Staff role set to ${role}.`)] });
+  // ── /levelup ───────────────────────────────────────────────────────────────
+  if (commandName === 'levelup') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'channel') {
+      const ch = interaction.options.getChannel('channel');
+      await Guild.findOneAndUpdate({ guildId }, { levelUpChannelId: ch.id });
+      return interaction.reply({ embeds: [successEmbed(`Level up messages will now be sent to ${ch}.`)] });
+    }
+    if (sub === 'disable') {
+      await Guild.findOneAndUpdate({ guildId }, { $addToSet: { levelUpDisabledChannels: interaction.channelId } });
+      return interaction.reply({ embeds: [successEmbed(`Level up messages disabled in this channel.`)] });
+    }
+  }
+
+  // ── /blacklist ─────────────────────────────────────────────────────────────
+  if (commandName === 'blacklist') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'level') {
+      const ch = interaction.options.getChannel('channel');
+      await Guild.findOneAndUpdate({ guildId }, { $addToSet: { xpBlacklistedChannels: ch.id } });
+      return interaction.reply({ embeds: [successEmbed(`${ch} blacklisted from XP gain.`)] });
+    }
+    if (sub === 'list') {
+      const blacklisted = guildData.xpBlacklistedChannels || [];
+      if (!blacklisted.length) return interaction.reply({ embeds: [infoEmbed('No channels blacklisted from XP.')] });
+      return interaction.reply({ embeds: [makeEmbed({ color: COLORS.WARNING, title: '🚫 XP Blacklisted Channels', description: blacklisted.map(id => `<#${id}>`).join('\n') })] });
+    }
+  }
+
+  // ── /whitelist ─────────────────────────────────────────────────────────────
+  if (commandName === 'whitelist') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'level') {
+      const ch = interaction.options.getChannel('channel');
+      await Guild.findOneAndUpdate({ guildId }, { $pull: { xpBlacklistedChannels: ch.id } });
+      return interaction.reply({ embeds: [successEmbed(`${ch} removed from XP blacklist.`)] });
+    }
+  }
+
+  // ── /suggest ───────────────────────────────────────────────────────────────
+  if (commandName === 'suggest') {
+    const channelId = guildData.suggestionChannelId;
+    if (!channelId) return interaction.reply({ embeds: [errorEmbed('No suggestion channel set. Ask an admin to use `/suggestion channel`.')], ephemeral: true });
+    const ch = guild.channels.cache.get(channelId);
+    if (!ch) return interaction.reply({ embeds: [errorEmbed('Suggestion channel not found.')], ephemeral: true });
+
+    // 6h cooldown
+    const lastSuggestion = await Suggestion.findOne({ userId: user.id, guildId }).sort({ createdAt: -1 });
+    if (lastSuggestion && Date.now() - new Date(lastSuggestion.createdAt).getTime() < 6 * 3600000) {
+      const remaining = 6 * 3600000 - (Date.now() - new Date(lastSuggestion.createdAt).getTime());
+      return interaction.reply({ embeds: [errorEmbed(`You can suggest again <t:${Math.floor((Date.now() + remaining)/1000)}:R>.`)], ephemeral: true });
+    }
+
+    const idea = interaction.options.getString('idea');
+    // Generate unique 3-letter code
+    let code;
+    do {
+      code = Array.from({ length: 3 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]).join('');
+    } while (await Suggestion.findOne({ code, guildId }));
+
+    const embed = new EmbedBuilder()
+      .setColor(0xf59e0b)
+      .setTitle(`💡 Suggestion — \`${code}\``)
+      .setDescription(idea)
+      .addFields(
+        { name: '👤 Submitted by', value: `<@${user.id}>`, inline: true },
+        { name: '📊 Status', value: '🟡 Pending', inline: true },
+        { name: '👍 Upvotes', value: '`0`', inline: true },
+        { name: '👎 Downvotes', value: '`0`', inline: true },
+      )
+      .setFooter({ text: `Code: ${code} • Use the button to vote` })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`suggestion_vote_${code}`).setLabel('Vote').setEmoji('📊').setStyle(ButtonStyle.Primary)
+    );
+
+    const msg = await ch.send({ embeds: [embed], components: [row] });
+    await Suggestion.create({ code, guildId, userId: user.id, content: idea, messageId: msg.id, channelId: ch.id });
+    return interaction.reply({ embeds: [successEmbed(`Your suggestion has been submitted! Code: \`${code}\``)], ephemeral: true });
+  }
+
+  // ── /suggestion ────────────────────────────────────────────────────────────
+  if (commandName === 'suggestion') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'channel') {
+      if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+      const ch = interaction.options.getChannel('channel');
+      await Guild.findOneAndUpdate({ guildId }, { suggestionChannelId: ch.id });
+      return interaction.reply({ embeds: [successEmbed(`Suggestion channel set to ${ch}.`)] });
+    }
+
+    if (sub === 'approve' || sub === 'disapprove') {
+      if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+      if (guildData.maintenanceMode) return interaction.reply({ embeds: [warningEmbed('Cannot approve/disapprove suggestions during maintenance mode.')], ephemeral: true });
+
+      const code   = interaction.options.getString('code').toUpperCase();
+      const reason = interaction.options.getString('reason') || null;
+      const sugg   = await Suggestion.findOne({ code, guildId });
+      if (!sugg) return interaction.reply({ embeds: [errorEmbed(`No suggestion found with code \`${code}\`.`)], ephemeral: true });
+
+      const approved = sub === 'approve';
+      await Suggestion.findOneAndUpdate({ code, guildId }, { status: approved ? 'approved' : 'disapproved', reason, reviewedBy: user.id });
+
+      const ch  = guild.channels.cache.get(sugg.channelId);
+      const msg = ch ? await ch.messages.fetch(sugg.messageId).catch(() => null) : null;
+      if (msg) {
+        const newEmbed = new EmbedBuilder()
+          .setColor(approved ? 0x22c55e : 0xef4444)
+          .setTitle(`💡 Suggestion — \`${code}\``)
+          .setDescription(sugg.content)
+          .addFields(
+            { name: '👤 Submitted by', value: `<@${sugg.userId}>`, inline: true },
+            { name: '📊 Status', value: approved ? '🟢 Approved' : '🔴 Disapproved', inline: true },
+            { name: '👍 Upvotes', value: `\`${sugg.upvotes.length}\``, inline: true },
+            { name: '👎 Downvotes', value: `\`${sugg.downvotes.length}\``, inline: true },
+            { name: `${approved ? '✅' : '❌'} Reviewed by`, value: `<@${user.id}>`, inline: true },
+          )
+          .setFooter({ text: `Code: ${code}${reason ? ` • Reason: ${reason}` : ''}` })
+          .setTimestamp();
+        msg.edit({ embeds: [newEmbed], components: [] }).catch(() => {});
+      }
+      return interaction.reply({ embeds: [successEmbed(`Suggestion \`${code}\` has been **${approved ? 'approved' : 'disapproved'}**.`)] });
+    }
+  }
+
+  // ── /role everyone ─────────────────────────────────────────────────────────
+  if (commandName === 'role') {
+    const sub    = interaction.options.getSubcommand();
+    if (sub === 'everyone') {
+      if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+      const action = interaction.options.getString('action');
+      const role   = interaction.options.getRole('role');
+      if (!guild.members.me.roles.highest.comparePositionTo(role) > 0) {
+        return interaction.reply({ embeds: [errorEmbed('That role is above my highest role.')], ephemeral: true });
+      }
+      await interaction.reply({ embeds: [infoEmbed(`${action === 'add' ? 'Adding' : 'Removing'} **${role.name}** ${action === 'add' ? 'to' : 'from'} all members. This may take a while on large servers...`)] });
+      const members = await guild.members.fetch();
+      let count = 0;
+      for (const [, m] of members) {
+        if (m.user.bot) continue;
+        try {
+          if (action === 'add' && !m.roles.cache.has(role.id)) { await m.roles.add(role); count++; }
+          if (action === 'remove' && m.roles.cache.has(role.id)) { await m.roles.remove(role); count++; }
+        } catch {}
+        await new Promise(r => setTimeout(r, 100)); // rate limit protection
+      }
+      return interaction.editReply({ embeds: [successEmbed(`${action === 'add' ? 'Added' : 'Removed'} **${role.name}** ${action === 'add' ? 'to' : 'from'} **${count}** members.`)] });
+    }
   }
 
   // ── /welcome ───────────────────────────────────────────────────────────────
@@ -753,15 +1035,17 @@ async function handleCommand(interaction, client) {
 
     if (sub === 'start') {
       if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
-      const prize      = interaction.options.getString('prize');
-      const durStr     = interaction.options.getString('duration');
-      const winners    = interaction.options.getInteger('winners') || 1;
-      const channel    = interaction.options.getChannel('channel') || interaction.channel;
-      const useBonus   = interaction.options.getBoolean('bonusentries') ?? true;
-      const ms         = parseDuration(durStr);
+      const prize          = interaction.options.getString('prize');
+      const durStr         = interaction.options.getString('duration');
+      const winners        = interaction.options.getInteger('winners') || 1;
+      const channel        = interaction.options.getChannel('channel') || interaction.channel;
+      const useBonus       = interaction.options.getBoolean('bonusentries') ?? true;
+      const msgReq         = interaction.options.getInteger('messagerequirement') || 0;
+      const roleReq        = interaction.options.getRole('rolerequirement') || null;
+      const pingRole       = interaction.options.getRole('pingrole') || null;
+      const ms             = parseDuration(durStr);
       if (!ms) return interaction.reply({ embeds: [errorEmbed('Invalid duration format. Use e.g. `1h`, `2d`.')], ephemeral: true });
-      const endsAt     = new Date(Date.now() + ms);
-      const maxEntries = guildData.giveawayMaxEntries || 100;
+      const endsAt         = new Date(Date.now() + ms);
 
       let giveawayId;
       do { giveawayId = genGiveawayId(); } while (await Giveaway.findOne({ giveawayId }));
@@ -771,30 +1055,61 @@ async function handleCommand(interaction, client) {
         ? bonusRoles.map(b => `<@&${b.roleId}> → **+${b.entries}** entries`).join('\n')
         : null;
 
+      const descLines = [
+        `Click **Enter Giveaway** to enter!`,
+        ``,
+        `⏰ **Ends:** <t:${Math.floor(endsAt.getTime()/1000)}:R> (<t:${Math.floor(endsAt.getTime()/1000)}:f>)`,
+        `🏆 **Winners:** ${winners}`,
+        `👤 **Hosted by:** <@${user.id}>`,
+        `🎟️ **Entries:** 0`,
+      ];
+      if (roleReq) descLines.push(`🔒 **Role Required:** <@&${roleReq.id}>`);
+      if (msgReq)  descLines.push(`💬 **Message Req:** ${msgReq} messages after giveaway starts`);
+      if (bonusLines) descLines.push(`\n✨ **Bonus Entries:**\n${bonusLines}`);
+
       const embed = new EmbedBuilder()
         .setColor(0xf9a825)
         .setTitle(`🎉 ${prize}`)
-        .setDescription([
-          `React with 🎉 or click **Enter Giveaway** to enter!`,
-          ``,
-          `⏰ **Ends:** <t:${Math.floor(endsAt.getTime()/1000)}:R> (<t:${Math.floor(endsAt.getTime()/1000)}:f>)`,
-          `🏆 **Winners:** ${winners}`,
-          `👤 **Hosted by:** <@${user.id}>`,
-          `🎟️ **Entries:** 0${maxEntries < 100 ? ` / ${maxEntries} max` : ''}`,
-          bonusLines ? `\n✨ **Bonus Entries:**\n${bonusLines}` : '',
-        ].filter(l => l !== '').join('\n'))
-        .setFooter({ text: `ID: ${giveawayId} • 1 entry per user` })
+        .setDescription(descLines.join('\n'))
+        .setFooter({ text: `ID: ${giveawayId}` })
         .setTimestamp(endsAt);
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`giveaway_enter_${giveawayId}`).setLabel('Enter Giveaway').setEmoji('🎉').setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId(`giveaway_enter_${giveawayId}`).setLabel('Enter Giveaway').setEmoji('🎉').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`giveaway_participants_${giveawayId}`).setLabel('Participants').setEmoji('👥').setStyle(ButtonStyle.Secondary),
       );
 
+      const pingContent = pingRole ? `<@&${pingRole.id}>` : undefined;
       await interaction.reply({ embeds: [successEmbed(`Giveaway started! ID: \`${giveawayId}\``)], ephemeral: true });
-      const msg = await channel.send({ embeds: [embed], components: [row] });
+      const msg = await channel.send({ content: pingContent, embeds: [embed], components: [row] });
 
-      await Giveaway.create({ giveawayId, guildId, channelId: channel.id, messageId: msg.id, prize, hostId: user.id, endsAt, winnerCount: winners, bonusEntries: useBonus, maxEntries, bonusRoles });
+      await Giveaway.create({ giveawayId, guildId, channelId: channel.id, messageId: msg.id, prize, hostId: user.id, endsAt, winnerCount: winners, bonusEntries: useBonus, bonusRoles, messageRequirement: msgReq, roleRequirement: roleReq?.id || null, pingRoleId: pingRole?.id || null, startedAt: new Date() });
       return;
+    }
+
+    if (sub === 'remove') {
+      if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+      const id      = interaction.options.getString('id').toUpperCase();
+      const target  = interaction.options.getUser('user');
+      const giveaway = await Giveaway.findOne({ giveawayId: id, guildId, ended: false });
+      if (!giveaway) return interaction.reply({ embeds: [errorEmbed('Active giveaway not found with that ID.')], ephemeral: true });
+      if (!giveaway.entries.includes(target.id)) {
+        return interaction.reply({ embeds: [errorEmbed(`**${target.username}** is not in this giveaway.`)], ephemeral: true });
+      }
+      const newEntries = giveaway.entries.filter(e => e !== target.id);
+      const updated    = await Giveaway.findOneAndUpdate({ giveawayId: id }, { entries: newEntries }, { new: true });
+      // Update embed
+      try {
+        const ch  = guild.channels.cache.get(giveaway.channelId);
+        const gmsg = ch ? await ch.messages.fetch(giveaway.messageId).catch(() => null) : null;
+        if (gmsg) {
+          const uniqueCount = [...new Set(updated.entries)].length;
+          const oldEmbed    = gmsg.embeds[0];
+          const newDesc     = oldEmbed.description.replace(/🎟️ \*\*Entries:\*\* \d+/, `🎟️ **Entries:** ${uniqueCount}`);
+          gmsg.edit({ embeds: [EmbedBuilder.from(oldEmbed).setDescription(newDesc)] }).catch(() => {});
+        }
+      } catch {}
+      return interaction.reply({ embeds: [successEmbed(`Removed **${target.username}** from giveaway \`${id}\`.`)] });
     }
 
     if (sub === 'entries') {
@@ -1142,6 +1457,9 @@ async function handleInteraction(interaction, client) {
 
   // Ticket open button
   if (interaction.isButton() && interaction.customId === 'ticket_open') {
+    if (guildData.maintenanceMode) {
+      return interaction.reply({ embeds: [warningEmbed('The bot is currently in maintenance mode. Tickets are temporarily unavailable.')], ephemeral: true });
+    }
     const types = guildData.ticketTypes || {};
     const options = [
       types.support && { label: '🛠️ Support', description: 'I need help with something', value: 'support' },
@@ -1303,18 +1621,8 @@ async function handleInteraction(interaction, client) {
     );
     await interaction.update({ components: [reopenRow] });
     await interaction.channel.send({ embeds: [makeEmbed({ color: COLORS.WARNING, description: `🔒 Ticket closed by <@${user.id}>.` })] });
-    // Send transcript to log channel
-    if (guildData.ticketLogChannelId) {
-      const logCh = guild.channels.cache.get(guildData.ticketLogChannelId);
-      if (logCh) {
-        const lines = ticket.transcript.map(m => `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}`);
-        const buffer = Buffer.from(lines.join('\n') || 'No messages.', 'utf-8');
-        await logCh.send({
-          embeds: [makeEmbed({ color: COLORS.INFO, title: '🎫 Ticket Closed', fields: [{ name: 'ID', value: ticket.ticketId, inline: true }, { name: 'Type', value: ticket.type, inline: true }, { name: 'User', value: `<@${ticket.userId}>`, inline: true }, { name: 'Reason', value: ticket.reason || 'N/A', inline: true }, { name: 'Closed By', value: `<@${user.id}>`, inline: true }], timestamp: true })],
-          files: [{ attachment: buffer, name: `ticket-${ticket.ticketId}.txt` }],
-        }).catch(() => {});
-      }
-    }
+    const updatedTicket = await Ticket.findOne({ ticketId: ticket.ticketId });
+    await sendTicketLog(updatedTicket, guild, guildData, client, user, 'closed');
     return;
   }
 
@@ -1348,17 +1656,7 @@ async function handleInteraction(interaction, client) {
     const ticket = await Ticket.findOne({ channelId: interaction.channelId });
     if (!ticket) return interaction.update({ embeds: [errorEmbed('Ticket not found.')], components: [] });
     await Ticket.findOneAndUpdate({ ticketId: ticket.ticketId }, { status: 'deleted' });
-    if (guildData.ticketLogChannelId) {
-      const logCh = guild.channels.cache.get(guildData.ticketLogChannelId);
-      if (logCh) {
-        const lines  = ticket.transcript.map(m => `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}`);
-        const buffer = Buffer.from(lines.join('\n') || 'No messages.', 'utf-8');
-        await logCh.send({
-          embeds: [makeEmbed({ color: COLORS.ERROR, title: '🗑️ Ticket Deleted', fields: [{ name: 'ID', value: ticket.ticketId, inline: true }, { name: 'Type', value: ticket.type, inline: true }, { name: 'User', value: `<@${ticket.userId}>`, inline: true }, { name: 'Reason', value: ticket.reason || 'N/A', inline: true }, { name: 'Deleted By', value: `<@${user.id}>`, inline: true }], timestamp: true })],
-          files: [{ attachment: buffer, name: `ticket-${ticket.ticketId}.txt` }],
-        }).catch(() => {});
-      }
-    }
+    await sendTicketLog(ticket, guild, guildData, client, user, 'deleted');
     await interaction.update({ embeds: [warningEmbed('Deleting ticket in 5 seconds...')], components: [] });
     setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     return;
@@ -1370,16 +1668,30 @@ async function handleInteraction(interaction, client) {
     const giveaway   = await Giveaway.findOne({ giveawayId, ended: false });
     if (!giveaway) return interaction.reply({ embeds: [errorEmbed('This giveaway has ended.')], ephemeral: true });
 
-    // Check max entries
-    const uniqueEntrants = [...new Set(giveaway.entries)];
-    const maxEntries     = giveaway.maxEntries || 100;
-    if (uniqueEntrants.length >= maxEntries && !giveaway.entries.includes(user.id)) {
-      return interaction.reply({ embeds: [errorEmbed(`This giveaway has reached the maximum of **${maxEntries}** entrants.`)], ephemeral: true });
+    // If already entered — ask to leave
+    if (giveaway.entries.includes(user.id)) {
+      const leaveRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`giveaway_leave_confirm_${giveawayId}`).setLabel('Leave Giveaway').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`giveaway_leave_cancel`).setLabel('Stay').setStyle(ButtonStyle.Secondary),
+      );
+      return interaction.reply({ embeds: [warningEmbed('You have already entered this giveaway. Do you want to **leave**?')], components: [leaveRow], ephemeral: true });
+    }
+
+    // Role requirement check
+    if (giveaway.roleRequirement && !member.roles.cache.has(giveaway.roleRequirement)) {
+      return interaction.reply({ embeds: [errorEmbed(`You need the <@&${giveaway.roleRequirement}> role to enter this giveaway.`)], ephemeral: true });
+    }
+
+    // Message requirement check
+    if (giveaway.messageRequirement > 0) {
+      const msgCount = (giveaway.msgTracking || {})[user.id] || 0;
+      if (msgCount < giveaway.messageRequirement) {
+        return interaction.reply({ embeds: [errorEmbed(`You need to send **${giveaway.messageRequirement}** messages after this giveaway started to enter. You have sent **${msgCount}** so far.`)], ephemeral: true });
+      }
     }
 
     const count = await getEntryCount(member, guildData);
     if (count === 0) return interaction.reply({ embeds: [errorEmbed('You are not eligible to enter this giveaway.')], ephemeral: true });
-    if (giveaway.entries.includes(user.id)) return interaction.reply({ embeds: [warningEmbed('You have already entered this giveaway!')], ephemeral: true });
 
     const newEntries = [user.id, ...Array(count - 1).fill(user.id)];
     const updated    = await Giveaway.findOneAndUpdate({ giveawayId }, { $push: { entries: { $each: newEntries } } }, { new: true });
@@ -1392,12 +1704,107 @@ async function handleInteraction(interaction, client) {
         const newUniqueCount = [...new Set(updated.entries)].length;
         const oldEmbed  = msg.embeds[0];
         const newDesc   = oldEmbed.description.replace(/🎟️ \*\*Entries:\*\* \d+/, `🎟️ **Entries:** ${newUniqueCount}`);
-        const newEmbed  = EmbedBuilder.from(oldEmbed).setDescription(newDesc);
-        msg.edit({ embeds: [newEmbed] }).catch(() => {});
+        msg.edit({ embeds: [EmbedBuilder.from(oldEmbed).setDescription(newDesc)] }).catch(() => {});
       }
     } catch {}
 
     return interaction.reply({ embeds: [successEmbed(`✅ You entered the giveaway${count > 1 ? ` with **${count} entries** (bonus)` : ''}! Good luck 🎉`)], ephemeral: true });
+  }
+
+  // Giveaway leave confirm
+  if (interaction.isButton() && interaction.customId.startsWith('giveaway_leave_confirm_')) {
+    const giveawayId = interaction.customId.replace('giveaway_leave_confirm_', '');
+    const giveaway   = await Giveaway.findOne({ giveawayId, ended: false });
+    if (!giveaway) return interaction.update({ embeds: [errorEmbed('Giveaway not found.')], components: [] });
+    const newEntries = giveaway.entries.filter(e => e !== user.id);
+    const updated    = await Giveaway.findOneAndUpdate({ giveawayId }, { entries: newEntries }, { new: true });
+    try {
+      const ch  = guild.channels.cache.get(giveaway.channelId);
+      const msg = ch ? await ch.messages.fetch(giveaway.messageId).catch(() => null) : null;
+      if (msg) {
+        const uniqueCount = [...new Set(updated.entries)].length;
+        const oldEmbed    = msg.embeds[0];
+        const newDesc     = oldEmbed.description.replace(/🎟️ \*\*Entries:\*\* \d+/, `🎟️ **Entries:** ${uniqueCount}`);
+        msg.edit({ embeds: [EmbedBuilder.from(oldEmbed).setDescription(newDesc)] }).catch(() => {});
+      }
+    } catch {}
+    return interaction.update({ embeds: [infoEmbed('You have left the giveaway.')], components: [] });
+  }
+
+  if (interaction.isButton() && interaction.customId === 'giveaway_leave_cancel') {
+    return interaction.update({ embeds: [successEmbed('You are still in the giveaway! Good luck 🎉')], components: [] });
+  }
+
+  // Giveaway participants button
+  if (interaction.isButton() && interaction.customId.startsWith('giveaway_participants_')) {
+    const giveawayId = interaction.customId.replace('giveaway_participants_', '');
+    const giveaway   = await Giveaway.findOne({ giveawayId });
+    if (!giveaway) return interaction.reply({ embeds: [errorEmbed('Giveaway not found.')], ephemeral: true });
+
+    const uniqueUsers = [...new Set(giveaway.entries)];
+    if (!uniqueUsers.length) return interaction.reply({ embeds: [infoEmbed('No participants yet.')], ephemeral: true });
+
+    const lines = uniqueUsers.slice(0, 25).map(uid => {
+      const entryCount = giveaway.entries.filter(e => e === uid).length;
+      return `<@${uid}> — **${entryCount}** ${entryCount === 1 ? 'entry' : 'entries'}`;
+    });
+    if (uniqueUsers.length > 25) lines.push(`*...and ${uniqueUsers.length - 25} more*`);
+
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setColor(0xf9a825)
+        .setTitle(`👥 Participants — ${giveaway.prize}`)
+        .setDescription(lines.join('\n'))
+        .setFooter({ text: `${uniqueUsers.length} total participants • ID: ${giveawayId}` })
+      ],
+      ephemeral: true,
+    });
+  }
+
+  // Suggestion vote button
+  if (interaction.isButton() && interaction.customId.startsWith('suggestion_vote_')) {
+    const code = interaction.customId.replace('suggestion_vote_', '');
+    const voteRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`suggestion_up_${code}`).setLabel('Upvote').setEmoji('👍').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`suggestion_down_${code}`).setLabel('Downvote').setEmoji('👎').setStyle(ButtonStyle.Danger),
+    );
+    return interaction.reply({ embeds: [makeEmbed({ color: COLORS.INFO, description: 'Cast your vote:' })], components: [voteRow], ephemeral: true });
+  }
+
+  // Suggestion upvote/downvote
+  if (interaction.isButton() && (interaction.customId.startsWith('suggestion_up_') || interaction.customId.startsWith('suggestion_down_'))) {
+    const isUp = interaction.customId.startsWith('suggestion_up_');
+    const code = interaction.customId.replace(isUp ? 'suggestion_up_' : 'suggestion_down_', '');
+    const sugg = await Suggestion.findOne({ code, guildId });
+    if (!sugg) return interaction.update({ embeds: [errorEmbed('Suggestion not found.')], components: [] });
+    if (sugg.status !== 'pending') return interaction.update({ embeds: [infoEmbed('This suggestion has already been reviewed.')], components: [] });
+
+    // Remove from both, add to correct one
+    await Suggestion.findOneAndUpdate({ code, guildId }, {
+      $pull: { upvotes: user.id, downvotes: user.id }
+    });
+    const updated = await Suggestion.findOneAndUpdate({ code, guildId }, {
+      $push: isUp ? { upvotes: user.id } : { downvotes: user.id }
+    }, { new: true });
+
+    // Update embed
+    try {
+      const ch  = guild.channels.cache.get(sugg.channelId);
+      const msg = ch ? await ch.messages.fetch(sugg.messageId).catch(() => null) : null;
+      if (msg) {
+        const oldEmbed = msg.embeds[0];
+        const newEmbed = EmbedBuilder.from(oldEmbed);
+        const fields   = oldEmbed.fields.map(f => {
+          if (f.name === '👍 Upvotes')   return { ...f, value: `\`${updated.upvotes.length}\`` };
+          if (f.name === '👎 Downvotes') return { ...f, value: `\`${updated.downvotes.length}\`` };
+          return f;
+        });
+        newEmbed.setFields(fields);
+        msg.edit({ embeds: [newEmbed] }).catch(() => {});
+      }
+    } catch {}
+
+    return interaction.update({ embeds: [successEmbed(`Your ${isUp ? '👍 upvote' : '👎 downvote'} has been recorded!`)], components: [] });
   }
 
   // Eval confirm/cancel
@@ -1442,3 +1849,52 @@ async function handleInteraction(interaction, client) {
 }
 
 module.exports = { commandDefs, handleCommand, handleInteraction, HELP_CATEGORIES };
+
+// ─── Ticket Helpers ───────────────────────────────────────────────────────────
+function buildTranscriptLines(ticket) {
+  const lines = [
+    `Ticket ID:   ${ticket.ticketId}`,
+    `Type:        ${ticket.type}`,
+    `Opened by:   ${ticket.userId}`,
+    `Reason:      ${ticket.reason || 'N/A'}`,
+    `Status:      ${ticket.status}`,
+    `Created:     ${new Date(ticket.createdAt).toISOString()}`,
+    ticket.closedAt ? `Closed:      ${new Date(ticket.closedAt).toISOString()}` : '',
+    '',
+    '─── Form Responses ───────────────────────────────────',
+    ...Object.entries(ticket.modalFields || {}).map(([k, v]) =>
+      `${k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}: ${v}`
+    ),
+    '',
+    '─── Messages ─────────────────────────────────────────',
+    ...ticket.transcript.map(m =>
+      `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}${m.attachments?.length ? ' [Files: ' + m.attachments.join(', ') + ']' : ''}`
+    ),
+  ].filter(l => l !== undefined);
+  return lines.join('\n');
+}
+
+async function sendTicketLog(ticket, guild, guildData, client, closedBy, action = 'closed') {
+  if (!guildData.ticketLogChannelId) return;
+  const logCh = guild.channels.cache.get(guildData.ticketLogChannelId);
+  if (!logCh) return;
+  const lines  = buildTranscriptLines(ticket);
+  const buffer = Buffer.from(lines, 'utf-8');
+  const colors = { closed: 0x4f8ef7, deleted: 0xef4444 };
+  const titles = { closed: '🔒 Ticket Closed', deleted: '🗑️ Ticket Deleted' };
+  const fields = [
+    { name: 'Ticket ID', value: ticket.ticketId, inline: true },
+    { name: 'Type',      value: ticket.type,      inline: true },
+    { name: 'Opened by', value: `<@${ticket.userId}>`, inline: true },
+    { name: 'Reason',    value: ticket.reason || 'N/A', inline: false },
+    { name: action === 'closed' ? 'Closed by' : 'Deleted by', value: `<@${closedBy.id}>`, inline: true },
+  ];
+  // Add all modal fields
+  Object.entries(ticket.modalFields || {}).forEach(([k, v]) => {
+    fields.push({ name: k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()), value: v.substring(0, 1024), inline: false });
+  });
+  await logCh.send({
+    embeds: [new EmbedBuilder().setColor(colors[action] || 0x4f8ef7).setTitle(titles[action]).addFields(fields).setTimestamp()],
+    files:  [{ attachment: buffer, name: `ticket-${ticket.ticketId}.txt` }],
+  }).catch(() => {});
+}
