@@ -4,7 +4,7 @@ const {
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { OWNER_ID, COLORS, CMD_PREFIX } = require('./config');
-const { User, Guild, Ticket, Giveaway, CustomCommand } = require('./models');
+const { User, Guild, Ticket, Giveaway, CustomCommand, Afk } = require('./models');
 const {
   makeEmbed, successEmbed, errorEmbed, warningEmbed, infoEmbed,
   isOwner, hasAdmin, hasModPerms, hasBanPerms, hasKickPerms, canActOn,
@@ -125,7 +125,10 @@ const commandDefs = [
     .addUserOption(o => o.setName('user').setDescription('User to clear').setRequired(true)),
 
   // Leveling
-  new SlashCommandBuilder().setName('rank').setDescription('View rank')
+  new SlashCommandBuilder().setName('level').setDescription('View your or someone\'s level card')
+    .addUserOption(o => o.setName('user').setDescription('User to check (defaults to you)')),
+
+  new SlashCommandBuilder().setName('messages').setDescription('View your or someone\'s message count')
     .addUserOption(o => o.setName('user').setDescription('User to check (defaults to you)')),
 
   new SlashCommandBuilder().setName('leaderboard').setDescription('View server leaderboard')
@@ -135,6 +138,33 @@ const commandDefs = [
   new SlashCommandBuilder().setName('setlevelrole').setDescription('Set role reward for a level')
     .addIntegerOption(o => o.setName('level').setDescription('Level number').setRequired(true))
     .addRoleOption(o => o.setName('role').setDescription('Role to assign').setRequired(true)),
+
+  new SlashCommandBuilder().setName('setlevel').setDescription('Set a user\'s level (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
+    .addIntegerOption(o => o.setName('level').setDescription('New level').setRequired(true).setMinValue(0)),
+
+  new SlashCommandBuilder().setName('addlevel').setDescription('Add or subtract levels from a user (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Amount to add (negative to subtract)').setRequired(true)),
+
+  new SlashCommandBuilder().setName('resetlevel').setDescription('Reset a user\'s level to 0 (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+
+  new SlashCommandBuilder().setName('setmessages').setDescription('Set a user\'s message count (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('New message count').setRequired(true).setMinValue(0)),
+
+  new SlashCommandBuilder().setName('addmessages').setDescription('Add or subtract messages from a user (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true))
+    .addIntegerOption(o => o.setName('amount').setDescription('Amount to add (negative to subtract)').setRequired(true)),
+
+  new SlashCommandBuilder().setName('resetmessages').setDescription('Reset a user\'s message count to 0 (admin)')
+    .addUserOption(o => o.setName('user').setDescription('User').setRequired(true)),
+
+  // AFK
+  new SlashCommandBuilder().setName('afk').setDescription('Set your AFK status')
+    .addStringOption(o => o.setName('reason').setDescription('AFK reason (default: AFK)'))
+    .addBooleanOption(o => o.setName('allservers').setDescription('Set AFK across all servers')),
 
   // Tickets
   new SlashCommandBuilder().setName('ticketpanel').setDescription('Send the ticket panel (owner only)'),
@@ -394,42 +424,111 @@ async function handleCommand(interaction, client) {
     return interaction.reply({ embeds: [successEmbed(`Cleared all warnings for ${target.tag}.`)] });
   }
 
-  // ── /rank ──────────────────────────────────────────────────────────────────
-  if (commandName === 'rank') {
-    const target = interaction.options.getUser('user') || user;
+  // ── /level ─────────────────────────────────────────────────────────────────
+  if (commandName === 'level') {
+    await interaction.deferReply();
+    const target   = interaction.options.getUser('user') || user;
     const userData = await User.findOne({ userId: target.id, guildId }) || { xp: 0, level: 0, messageCount: 0 };
-    const needed = xpForLevel(userData.level + 1);
+    const needed   = xpForLevel(userData.level + 1);
     const allUsers = await User.find({ guildId }).sort({ level: -1, xp: -1 });
-    const rank = allUsers.findIndex(u => u.userId === target.id) + 1;
-    const bar = progressBar(userData.xp, needed);
-    const embed = makeEmbed({
-      color: COLORS.PRIMARY,
-      title: `📊 ${target.username}'s Rank`,
-      thumbnail: target.displayAvatarURL({ dynamic: true }),
-      fields: [
-        { name: 'Level',    value: `${userData.level}`,  inline: true },
-        { name: 'XP',       value: `${userData.xp} / ${needed}`, inline: true },
-        { name: 'Rank',     value: `#${rank}`,           inline: true },
-        { name: 'Messages', value: `${userData.messageCount}`, inline: true },
-        { name: 'Progress', value: `\`${bar}\`` },
-      ],
-    });
-    return interaction.reply({ embeds: [embed] });
+    const rank     = allUsers.findIndex(u => u.userId === target.id) + 1 || allUsers.length + 1;
+    try {
+      const { generateRankCard } = require('./rankCard');
+      const buffer = await generateRankCard({
+        username:     target.username,
+        avatarURL:    target.displayAvatarURL({ extension: 'png', size: 256 }),
+        level:        userData.level,
+        xp:           userData.xp,
+        xpNeeded:     needed,
+        rank:         rank,
+        messageCount: userData.messageCount,
+        accentColor:  '#7c3aed',
+      });
+      return interaction.editReply({ files: [{ attachment: buffer, name: 'level.png' }] });
+    } catch (e) {
+      // Fallback to embed if canvas fails
+      const bar   = progressBar(userData.xp, needed);
+      const embed = makeEmbed({
+        color: COLORS.PRIMARY,
+        title: `📊 ${target.username}'s Level`,
+        thumbnail: target.displayAvatarURL({ dynamic: true }),
+        fields: [
+          { name: '🏆 Rank',     value: `#${rank}`,                    inline: true },
+          { name: '⬆️ Level',    value: `${userData.level}`,           inline: true },
+          { name: '✉️ Messages', value: `${userData.messageCount.toLocaleString()}`, inline: true },
+          { name: '✨ XP',       value: `${userData.xp.toLocaleString()} / ${needed.toLocaleString()}`, inline: true },
+          { name: '📈 Progress', value: `\`${bar}\` ${Math.floor((userData.xp/needed)*100)}%` },
+        ],
+        timestamp: true,
+      });
+      return interaction.editReply({ embeds: [embed] });
+    }
+  }
+
+  // ── /messages ──────────────────────────────────────────────────────────────
+  if (commandName === 'messages') {
+    await interaction.deferReply();
+    const target   = interaction.options.getUser('user') || user;
+    const userData = await User.findOne({ userId: target.id, guildId }) || { messageCount: 0 };
+    const allUsers = await User.find({ guildId }).sort({ messageCount: -1 });
+    const rank     = allUsers.findIndex(u => u.userId === target.id) + 1 || allUsers.length + 1;
+    try {
+      const { generateMessagesCard } = require('./rankCard');
+      const buffer = await generateMessagesCard({
+        username:     target.username,
+        avatarURL:    target.displayAvatarURL({ extension: 'png', size: 256 }),
+        messageCount: userData.messageCount,
+        rank:         rank,
+        accentColor:  '#4f8ef7',
+      });
+      return interaction.editReply({ files: [{ attachment: buffer, name: 'messages.png' }] });
+    } catch (e) {
+      const embed = makeEmbed({
+        color: COLORS.INFO,
+        title: `💬 ${target.username}'s Messages`,
+        thumbnail: target.displayAvatarURL({ dynamic: true }),
+        fields: [
+          { name: '💬 Messages', value: `${userData.messageCount.toLocaleString()}`, inline: true },
+          { name: '🏆 Rank',     value: `#${rank}`,                                  inline: true },
+        ],
+        timestamp: true,
+      });
+      return interaction.editReply({ embeds: [embed] });
+    }
   }
 
   // ── /leaderboard ───────────────────────────────────────────────────────────
   if (commandName === 'leaderboard') {
-    const type = interaction.options.getString('type');
-    const sort = type === 'messages' ? { messageCount: -1 } : { level: -1, xp: -1 };
-    const allUsers = await User.find({ guildId }).sort(sort).limit(10);
-    const guildMembers = await guild.members.fetch();
-    const valid = allUsers.filter(u => guildMembers.has(u.userId));
+    await interaction.deferReply();
+    const type       = interaction.options.getString('type');
+    const sort       = type === 'messages' ? { messageCount: -1 } : { level: -1, xp: -1 };
+    const allUsers   = await User.find({ guildId }).sort(sort).limit(15);
+    const guildMembers = await guild.members.fetch().catch(() => null);
+    const medals     = ['🥇', '🥈', '🥉'];
+    const valid      = allUsers.filter(u => guildMembers?.has(u.userId)).slice(0, 10);
+
+    if (!valid.length) return interaction.editReply({ embeds: [infoEmbed('No data yet. Members need to chat first!')] });
+
     const lines = valid.map((u, i) => {
-      const m = guildMembers.get(u.userId);
-      const val = type === 'messages' ? `${u.messageCount} messages` : `Level ${u.level} · ${u.xp} XP`;
-      return `**${i + 1}.** ${m?.user.username || 'Unknown'} — ${val}`;
+      const m      = guildMembers?.get(u.userId);
+      const name   = m?.user.username || 'Unknown';
+      const medal  = medals[i] || `\`${String(i+1).padStart(2,'0')}\``;
+      if (type === 'messages') {
+        return `${medal} **${name}** — \`${u.messageCount.toLocaleString()}\` messages`;
+      } else {
+        return `${medal} **${name}** — Level \`${u.level}\``;
+      }
     });
-    return interaction.reply({ embeds: [makeEmbed({ color: COLORS.PRIMARY, title: type === 'messages' ? '💬 Top Messagers' : '⬆️ Top Levels', description: lines.join('\n') || 'No data yet.' })] });
+
+    const embed = new EmbedBuilder()
+      .setColor(type === 'messages' ? COLORS.INFO : COLORS.PRIMARY)
+      .setTitle(type === 'messages' ? '💬 Message Leaderboard' : '⬆️ Level Leaderboard')
+      .setDescription(lines.join('\n'))
+      .setFooter({ text: `${guild.name} • Top ${valid.length} members` })
+      .setThumbnail(guild.iconURL({ dynamic: true }))
+      .setTimestamp();
+
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /setlevelrole ──────────────────────────────────────────────────────────
@@ -442,9 +541,80 @@ async function handleCommand(interaction, client) {
     return interaction.reply({ embeds: [successEmbed(`Role ${role.name} will now be assigned at level ${level}.`)] });
   }
 
+  // ── /setlevel ──────────────────────────────────────────────────────────────
+  if (commandName === 'setlevel') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    const level  = interaction.options.getInteger('level');
+    await User.findOneAndUpdate({ userId: target.id, guildId }, { $set: { level, xp: 0 }, $setOnInsert: { userId: target.id, guildId } }, { upsert: true });
+    return interaction.reply({ embeds: [successEmbed(`Set **${target.username}**'s level to **${level}**.`)] });
+  }
+
+  // ── /addlevel ──────────────────────────────────────────────────────────────
+  if (commandName === 'addlevel') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    const amount = interaction.options.getInteger('amount');
+    const updated = await User.findOneAndUpdate({ userId: target.id, guildId }, { $inc: { level: amount }, $setOnInsert: { userId: target.id, guildId } }, { upsert: true, new: true });
+    return interaction.reply({ embeds: [successEmbed(`${amount > 0 ? 'Added' : 'Removed'} **${Math.abs(amount)}** levels ${amount > 0 ? 'to' : 'from'} **${target.username}**. Now level **${updated.level}**.`)] });
+  }
+
+  // ── /resetlevel ────────────────────────────────────────────────────────────
+  if (commandName === 'resetlevel') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    await User.findOneAndUpdate({ userId: target.id, guildId }, { $set: { level: 0, xp: 0 } });
+    return interaction.reply({ embeds: [successEmbed(`Reset **${target.username}**'s level to 0.`)] });
+  }
+
+  // ── /setmessages ───────────────────────────────────────────────────────────
+  if (commandName === 'setmessages') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    const amount = interaction.options.getInteger('amount');
+    await User.findOneAndUpdate({ userId: target.id, guildId }, { $set: { messageCount: amount }, $setOnInsert: { userId: target.id, guildId } }, { upsert: true });
+    return interaction.reply({ embeds: [successEmbed(`Set **${target.username}**'s message count to **${amount.toLocaleString()}**.`)] });
+  }
+
+  // ── /addmessages ───────────────────────────────────────────────────────────
+  if (commandName === 'addmessages') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target  = interaction.options.getUser('user');
+    const amount  = interaction.options.getInteger('amount');
+    const updated = await User.findOneAndUpdate({ userId: target.id, guildId }, { $inc: { messageCount: amount }, $setOnInsert: { userId: target.id, guildId } }, { upsert: true, new: true });
+    return interaction.reply({ embeds: [successEmbed(`${amount > 0 ? 'Added' : 'Removed'} **${Math.abs(amount).toLocaleString()}** messages ${amount > 0 ? 'to' : 'from'} **${target.username}**. Now **${updated.messageCount.toLocaleString()}**.`)] });
+  }
+
+  // ── /resetmessages ─────────────────────────────────────────────────────────
+  if (commandName === 'resetmessages') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target = interaction.options.getUser('user');
+    await User.findOneAndUpdate({ userId: target.id, guildId }, { $set: { messageCount: 0 } });
+    return interaction.reply({ embeds: [successEmbed(`Reset **${target.username}**'s message count to 0.`)] });
+  }
+
+  // ── /afk ───────────────────────────────────────────────────────────────────
+  if (commandName === 'afk') {
+    const reason    = interaction.options.getString('reason') || 'AFK';
+    const allGuilds = interaction.options.getBoolean('allservers') || false;
+    if (allGuilds) {
+      await Afk.deleteMany({ userId: user.id });
+      await Afk.create({ userId: user.id, guildId: null, reason, allGuilds: true });
+    } else {
+      await Afk.deleteMany({ userId: user.id, guildId });
+      await Afk.create({ userId: user.id, guildId, reason, allGuilds: false });
+    }
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setColor(COLORS.INFO)
+        .setDescription(`💤 You are now AFK: **${reason}**${allGuilds ? ' *(all servers)*' : ''}`)
+      ]
+    });
+  }
+
   // ── /ticketpanel ───────────────────────────────────────────────────────────
   if (commandName === 'ticketpanel') {
-    if (!isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only the bot owner can use this command.')], ephemeral: true });
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
     const cfg = guildData.ticketPanel;
     const embed = new EmbedBuilder()
       .setColor(cfg.color || '#7C3AED')
@@ -455,8 +625,9 @@ async function handleCommand(interaction, client) {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('ticket_open').setLabel(cfg.buttonLabel || 'Create Ticket').setEmoji(cfg.buttonEmoji || '🎫').setStyle(ButtonStyle.Primary)
     );
-    await interaction.reply({ content: '✅ Ticket panel sent!', ephemeral: true });
-    return interaction.channel.send({ embeds: [embed], components: [row] });
+    const msg = await interaction.channel.send({ embeds: [embed], components: [row] });
+    await Guild.findOneAndUpdate({ guildId }, { 'ticketPanel.channelId': interaction.channelId, 'ticketPanel.messageId': msg.id });
+    return interaction.reply({ content: '✅ Ticket panel sent!', ephemeral: true });
   }
 
   // ── /close ─────────────────────────────────────────────────────────────────
@@ -582,33 +753,47 @@ async function handleCommand(interaction, client) {
 
     if (sub === 'start') {
       if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
-      const prize    = interaction.options.getString('prize');
-      const durStr   = interaction.options.getString('duration');
-      const winners  = interaction.options.getInteger('winners') || 1;
-      const channel  = interaction.options.getChannel('channel') || interaction.channel;
-      const useBonus = interaction.options.getBoolean('bonusentries') ?? true;
-      const ms       = parseDuration(durStr);
+      const prize      = interaction.options.getString('prize');
+      const durStr     = interaction.options.getString('duration');
+      const winners    = interaction.options.getInteger('winners') || 1;
+      const channel    = interaction.options.getChannel('channel') || interaction.channel;
+      const useBonus   = interaction.options.getBoolean('bonusentries') ?? true;
+      const ms         = parseDuration(durStr);
       if (!ms) return interaction.reply({ embeds: [errorEmbed('Invalid duration format. Use e.g. `1h`, `2d`.')], ephemeral: true });
-      const endsAt   = new Date(Date.now() + ms);
+      const endsAt     = new Date(Date.now() + ms);
+      const maxEntries = guildData.giveawayMaxEntries || 100;
 
       let giveawayId;
       do { giveawayId = genGiveawayId(); } while (await Giveaway.findOne({ giveawayId }));
 
+      const bonusRoles = useBonus ? (guildData.giveawayBonusEntries || []) : [];
+      const bonusLines = bonusRoles.length
+        ? bonusRoles.map(b => `<@&${b.roleId}> → **+${b.entries}** entries`).join('\n')
+        : null;
+
       const embed = new EmbedBuilder()
-        .setColor(COLORS.PRIMARY)
-        .setTitle(`🎁 GIVEAWAY — ${prize}`)
-        .setDescription(`Click 🎉 to enter!\n\n**Ends:** <t:${Math.floor(endsAt.getTime()/1000)}:R>\n**Winners:** ${winners}\n**Host:** <@${user.id}>\n**ID:** \`${giveawayId}\``)
-        .setFooter({ text: `Giveaway ID: ${giveawayId}` })
+        .setColor(0xf9a825)
+        .setTitle(`🎉 ${prize}`)
+        .setDescription([
+          `React with 🎉 or click **Enter Giveaway** to enter!`,
+          ``,
+          `⏰ **Ends:** <t:${Math.floor(endsAt.getTime()/1000)}:R> (<t:${Math.floor(endsAt.getTime()/1000)}:f>)`,
+          `🏆 **Winners:** ${winners}`,
+          `👤 **Hosted by:** <@${user.id}>`,
+          `🎟️ **Entries:** 0${maxEntries < 100 ? ` / ${maxEntries} max` : ''}`,
+          bonusLines ? `\n✨ **Bonus Entries:**\n${bonusLines}` : '',
+        ].filter(l => l !== '').join('\n'))
+        .setFooter({ text: `ID: ${giveawayId} • 1 entry per user` })
         .setTimestamp(endsAt);
 
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`giveaway_enter_${giveawayId}`).setLabel('Enter').setEmoji('🎉').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder().setCustomId(`giveaway_enter_${giveawayId}`).setLabel('Enter Giveaway').setEmoji('🎉').setStyle(ButtonStyle.Success)
       );
 
       await interaction.reply({ embeds: [successEmbed(`Giveaway started! ID: \`${giveawayId}\``)], ephemeral: true });
       const msg = await channel.send({ embeds: [embed], components: [row] });
 
-      await Giveaway.create({ giveawayId, guildId, channelId: channel.id, messageId: msg.id, prize, hostId: user.id, endsAt, winnerCount: winners, bonusEntries: useBonus });
+      await Giveaway.create({ giveawayId, guildId, channelId: channel.id, messageId: msg.id, prize, hostId: user.id, endsAt, winnerCount: winners, bonusEntries: useBonus, maxEntries, bonusRoles });
       return;
     }
 
@@ -1059,37 +1244,123 @@ async function handleInteraction(interaction, client) {
       permissionOverwrites: overwrites,
     });
 
-    const ticketId = `TKT-${nanoid(6).toUpperCase()}`;
-    await Ticket.create({ ticketId, channelId: channel.id, userId: user.id, guildId, type, modalFields: fields, status: 'open' });
+    const ticketId  = `TKT-${nanoid(6).toUpperCase()}`;
+    const reason    = fields.help_needed || fields.punishment || fields.subject || fields.prize || '';
+    await Ticket.create({ ticketId, channelId: channel.id, userId: user.id, guildId, type, reason, modalFields: fields, status: 'open' });
 
     const fieldLines = Object.entries(fields).map(([k, v]) => ({ name: k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()), value: v }));
-    const embed = makeEmbed({
-      color: COLORS.PRIMARY,
-      title: `${emoji} ${type.charAt(0).toUpperCase() + type.slice(1)} Ticket`,
-      description: `Ticket opened by <@${user.id}>\n**Ticket ID:** \`${ticketId}\``,
-      fields: fieldLines,
-      footer: `Click the button below to close this ticket`,
-      timestamp: true,
-    });
+    const embed = new EmbedBuilder()
+      .setColor(COLORS.PRIMARY)
+      .setTitle(`${emoji} ${type.charAt(0).toUpperCase() + type.slice(1)} Ticket`)
+      .setDescription(`Ticket opened by <@${user.id}>\n**Ticket ID:** \`${ticketId}\`\n**Type:** ${type}`)
+      .addFields(fieldLines)
+      .setFooter({ text: `Use the buttons below to manage this ticket` })
+      .setTimestamp();
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+    const ticketRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_transcript_btn').setLabel('Transcript').setEmoji('📄').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_delete_btn').setLabel('Delete').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
     );
 
-    await channel.send({ content: guildData.staffRoleId ? `<@&${guildData.staffRoleId}>` : undefined, embeds: [embed], components: [row] });
+    await channel.send({ content: guildData.staffRoleId ? `<@&${guildData.staffRoleId}>` : undefined, embeds: [embed], components: [ticketRow] });
     return interaction.reply({ embeds: [successEmbed(`Your ticket has been created at ${channel}!`)], ephemeral: true });
   }
 
-  // Close ticket button
+  // ── Close ticket button ─────────────────────────────────────────────────────
   if (interaction.isButton() && interaction.customId === 'ticket_close_btn') {
     const ticket = await Ticket.findOne({ channelId: interaction.channelId, status: 'open' });
-    if (!ticket) return interaction.reply({ embeds: [errorEmbed('This ticket is already closed.')], ephemeral: true });
+    if (!ticket) {
+      // Maybe it's closed — show reopen button
+      const closedTicket = await Ticket.findOne({ channelId: interaction.channelId, status: 'closed' });
+      if (closedTicket) {
+        const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+        if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can reopen tickets.')], ephemeral: true });
+        // Reopen
+        await Ticket.findOneAndUpdate({ ticketId: closedTicket.ticketId }, { status: 'open' });
+        await interaction.channel.permissionOverwrites.edit(closedTicket.userId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
+        const ticketRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Close').setEmoji('🔒').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('ticket_transcript_btn').setLabel('Transcript').setEmoji('📄').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('ticket_delete_btn').setLabel('Delete').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+        );
+        await interaction.update({ components: [ticketRow] });
+        return interaction.channel.send({ embeds: [successEmbed(`🔓 Ticket reopened by <@${user.id}>.`)] });
+      }
+      return interaction.reply({ embeds: [errorEmbed('No active ticket found in this channel.')], ephemeral: true });
+    }
     const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
     if (ticket.userId !== user.id && !isStaff && !isOwner(user.id)) {
       return interaction.reply({ embeds: [errorEmbed('Only the ticket creator or staff can close this ticket.')], ephemeral: true });
     }
-    await interaction.reply({ embeds: [infoEmbed('Closing ticket...')] });
-    await closeTicket(ticket, interaction.channel, guild, guildData, client, user);
+    // Close — hide from user but don't delete
+    await Ticket.findOneAndUpdate({ ticketId: ticket.ticketId }, { status: 'closed', closedAt: new Date() });
+    await interaction.channel.permissionOverwrites.edit(ticket.userId, { ViewChannel: false });
+    const reopenRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_close_btn').setLabel('Reopen').setEmoji('🔓').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('ticket_transcript_btn').setLabel('Transcript').setEmoji('📄').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('ticket_delete_btn').setLabel('Delete').setEmoji('🗑️').setStyle(ButtonStyle.Danger),
+    );
+    await interaction.update({ components: [reopenRow] });
+    await interaction.channel.send({ embeds: [makeEmbed({ color: COLORS.WARNING, description: `🔒 Ticket closed by <@${user.id}>.` })] });
+    // Send transcript to log channel
+    if (guildData.ticketLogChannelId) {
+      const logCh = guild.channels.cache.get(guildData.ticketLogChannelId);
+      if (logCh) {
+        const lines = ticket.transcript.map(m => `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}`);
+        const buffer = Buffer.from(lines.join('\n') || 'No messages.', 'utf-8');
+        await logCh.send({
+          embeds: [makeEmbed({ color: COLORS.INFO, title: '🎫 Ticket Closed', fields: [{ name: 'ID', value: ticket.ticketId, inline: true }, { name: 'Type', value: ticket.type, inline: true }, { name: 'User', value: `<@${ticket.userId}>`, inline: true }, { name: 'Reason', value: ticket.reason || 'N/A', inline: true }, { name: 'Closed By', value: `<@${user.id}>`, inline: true }], timestamp: true })],
+          files: [{ attachment: buffer, name: `ticket-${ticket.ticketId}.txt` }],
+        }).catch(() => {});
+      }
+    }
+    return;
+  }
+
+  // ── Transcript button ───────────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === 'ticket_transcript_btn') {
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can generate transcripts.')], ephemeral: true });
+    const ticket = await Ticket.findOne({ channelId: interaction.channelId });
+    if (!ticket) return interaction.reply({ embeds: [errorEmbed('No ticket found.')], ephemeral: true });
+    const lines  = ticket.transcript.map(m => `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}${m.attachments?.length ? ' [Attachments: ' + m.attachments.join(', ') + ']' : ''}`);
+    const buffer = Buffer.from(lines.join('\n') || 'No messages recorded.', 'utf-8');
+    return interaction.reply({ embeds: [infoEmbed(`📄 Transcript for ticket \`${ticket.ticketId}\``)], files: [{ attachment: buffer, name: `transcript-${ticket.ticketId}.txt` }], ephemeral: true });
+  }
+
+  // ── Delete ticket button ────────────────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId === 'ticket_delete_btn') {
+    const isStaff = guildData.staffRoleId ? member.roles.cache.has(guildData.staffRoleId) : hasAdmin(member);
+    if (!isStaff && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('Only staff can delete tickets.')], ephemeral: true });
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('ticket_delete_confirm').setLabel('Yes, Delete').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('ticket_delete_cancel').setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+    );
+    return interaction.reply({ embeds: [warningEmbed('Are you sure you want to **permanently delete** this ticket? This cannot be undone.')], components: [confirmRow], ephemeral: true });
+  }
+
+  if (interaction.isButton() && interaction.customId === 'ticket_delete_cancel') {
+    return interaction.update({ embeds: [infoEmbed('Deletion cancelled.')], components: [] });
+  }
+
+  if (interaction.isButton() && interaction.customId === 'ticket_delete_confirm') {
+    const ticket = await Ticket.findOne({ channelId: interaction.channelId });
+    if (!ticket) return interaction.update({ embeds: [errorEmbed('Ticket not found.')], components: [] });
+    await Ticket.findOneAndUpdate({ ticketId: ticket.ticketId }, { status: 'deleted' });
+    if (guildData.ticketLogChannelId) {
+      const logCh = guild.channels.cache.get(guildData.ticketLogChannelId);
+      if (logCh) {
+        const lines  = ticket.transcript.map(m => `[${new Date(m.timestamp).toISOString()}] ${m.authorUsername}: ${m.content}`);
+        const buffer = Buffer.from(lines.join('\n') || 'No messages.', 'utf-8');
+        await logCh.send({
+          embeds: [makeEmbed({ color: COLORS.ERROR, title: '🗑️ Ticket Deleted', fields: [{ name: 'ID', value: ticket.ticketId, inline: true }, { name: 'Type', value: ticket.type, inline: true }, { name: 'User', value: `<@${ticket.userId}>`, inline: true }, { name: 'Reason', value: ticket.reason || 'N/A', inline: true }, { name: 'Deleted By', value: `<@${user.id}>`, inline: true }], timestamp: true })],
+          files: [{ attachment: buffer, name: `ticket-${ticket.ticketId}.txt` }],
+        }).catch(() => {});
+      }
+    }
+    await interaction.update({ embeds: [warningEmbed('Deleting ticket in 5 seconds...')], components: [] });
+    setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     return;
   }
 
@@ -1099,13 +1370,34 @@ async function handleInteraction(interaction, client) {
     const giveaway   = await Giveaway.findOne({ giveawayId, ended: false });
     if (!giveaway) return interaction.reply({ embeds: [errorEmbed('This giveaway has ended.')], ephemeral: true });
 
+    // Check max entries
+    const uniqueEntrants = [...new Set(giveaway.entries)];
+    const maxEntries     = giveaway.maxEntries || 100;
+    if (uniqueEntrants.length >= maxEntries && !giveaway.entries.includes(user.id)) {
+      return interaction.reply({ embeds: [errorEmbed(`This giveaway has reached the maximum of **${maxEntries}** entrants.`)], ephemeral: true });
+    }
+
     const count = await getEntryCount(member, guildData);
     if (count === 0) return interaction.reply({ embeds: [errorEmbed('You are not eligible to enter this giveaway.')], ephemeral: true });
     if (giveaway.entries.includes(user.id)) return interaction.reply({ embeds: [warningEmbed('You have already entered this giveaway!')], ephemeral: true });
 
     const newEntries = [user.id, ...Array(count - 1).fill(user.id)];
-    await Giveaway.findOneAndUpdate({ giveawayId }, { $push: { entries: { $each: newEntries } } });
-    return interaction.reply({ embeds: [successEmbed(`You entered the giveaway${count > 1 ? ` with **${count} entries**` : ''}! Good luck 🎉`)], ephemeral: true });
+    const updated    = await Giveaway.findOneAndUpdate({ giveawayId }, { $push: { entries: { $each: newEntries } } }, { new: true });
+
+    // Update embed entry count
+    try {
+      const ch  = guild.channels.cache.get(giveaway.channelId);
+      const msg = ch ? await ch.messages.fetch(giveaway.messageId).catch(() => null) : null;
+      if (msg) {
+        const newUniqueCount = [...new Set(updated.entries)].length;
+        const oldEmbed  = msg.embeds[0];
+        const newDesc   = oldEmbed.description.replace(/🎟️ \*\*Entries:\*\* \d+/, `🎟️ **Entries:** ${newUniqueCount}`);
+        const newEmbed  = EmbedBuilder.from(oldEmbed).setDescription(newDesc);
+        msg.edit({ embeds: [newEmbed] }).catch(() => {});
+      }
+    } catch {}
+
+    return interaction.reply({ embeds: [successEmbed(`✅ You entered the giveaway${count > 1 ? ` with **${count} entries** (bonus)` : ''}! Good luck 🎉`)], ephemeral: true });
   }
 
   // Eval confirm/cancel
