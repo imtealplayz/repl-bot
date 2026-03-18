@@ -264,31 +264,52 @@ async function punishNuker(executorId, guild, guildData, action, client) {
 
 // ─── Giveaway Scheduler ───────────────────────────────────────────────────────
 async function endGiveaway(giveaway, client) {
-  const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+  const { EmbedBuilder } = require('discord.js');
   try {
     const guild   = await client.guilds.fetch(giveaway.guildId).catch(() => null);
     if (!guild) return;
     const channel = await guild.channels.fetch(giveaway.channelId).catch(() => null);
     if (!channel) return;
 
-    let entries = [...giveaway.entries];
-    const winners = [];
-    const count   = Math.min(giveaway.winnerCount, entries.length);
+    // Build weighted pool — each userId appears N times for bonus entries
+    // but we pick unique winners only
+    const pool       = [...giveaway.entries]; // may have duplicates for bonus
+    const uniquePool = [...new Set(pool)];    // unique entrants
+    const winners    = [];
+    const count      = Math.min(giveaway.winnerCount, uniquePool.length);
+    const remaining  = [...uniquePool];
 
     for (let i = 0; i < count; i++) {
-      const idx = Math.floor(Math.random() * entries.length);
-      winners.push(entries[idx]);
-      entries.splice(idx, 1);
+      // Weighted pick — count how many times each user appears for their weight
+      const weights = remaining.map(uid => pool.filter(e => e === uid).length);
+      const total   = weights.reduce((a, b) => a + b, 0);
+      let rand      = Math.random() * total;
+      let picked    = remaining[remaining.length - 1];
+      for (let j = 0; j < remaining.length; j++) {
+        rand -= weights[j];
+        if (rand <= 0) { picked = remaining[j]; break; }
+      }
+      winners.push(picked);
+      remaining.splice(remaining.indexOf(picked), 1);
     }
 
     await Giveaway.findOneAndUpdate({ giveawayId: giveaway.giveawayId }, { ended: true, winners });
 
     const winnerMentions = winners.length ? winners.map(w => `<@${w}>`).join(', ') : 'No valid entries';
+    const uniqueCount    = uniquePool.length;
+
     const embed = new EmbedBuilder()
-      .setColor(0x4ADE80)
-      .setTitle(`🎁 Giveaway Ended — ${giveaway.prize}`)
-      .setDescription(`**Winners:** ${winnerMentions}\n**ID:** \`${giveaway.giveawayId}\`\n**Entries:** ${giveaway.entries.length}`)
-      .setFooter({ text: `Hosted by <@${giveaway.hostId}> · ID: ${giveaway.giveawayId}` })
+      .setColor(0xf9a825)
+      .setTitle(`🎉 ${giveaway.prize}`)
+      .setDescription([
+        `**Winners:** ${winnerMentions}`,
+        ``,
+        `⏰ **Ended:** <t:${Math.floor(new Date(giveaway.endsAt).getTime()/1000)}:R>`,
+        `🏆 **Winners:** ${giveaway.winnerCount}`,
+        `👤 **Hosted by:** <@${giveaway.hostId}>`,
+        `🎟️ **Total Entries:** ${uniqueCount}`,
+      ].join('\n'))
+      .setFooter({ text: `ID: ${giveaway.giveawayId} • Giveaway Ended` })
       .setTimestamp();
 
     if (giveaway.messageId) {
@@ -297,17 +318,26 @@ async function endGiveaway(giveaway, client) {
     }
 
     if (winners.length) {
-      channel.send({ content: `🎉 Congratulations ${winnerMentions}! You won **${giveaway.prize}**!` });
+      channel.send({ content: `🎉 Congratulations ${winnerMentions}! You won **${giveaway.prize}**!\nID: \`${giveaway.giveawayId}\`` });
+    } else {
+      channel.send({ embeds: [embed] });
     }
-  } catch {}
+  } catch (e) {
+    console.error('endGiveaway error:', e.message);
+  }
 }
 
 function startGiveawayScheduler(client) {
+  // Check every 10 seconds for more accurate timing
   setInterval(async () => {
-    const now  = new Date();
-    const due  = await Giveaway.find({ ended: false, endsAt: { $lte: now } });
-    for (const g of due) await endGiveaway(g, client);
-  }, 30000);
+    try {
+      const now = new Date();
+      const due = await Giveaway.find({ ended: false, endsAt: { $lte: now } });
+      for (const g of due) await endGiveaway(g, client);
+    } catch (e) {
+      console.error('Scheduler error:', e.message);
+    }
+  }, 10000);
 }
 
 // ─── Get or create guild data ─────────────────────────────────────────────────
