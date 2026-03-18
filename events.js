@@ -1,11 +1,22 @@
 const { Events, EmbedBuilder } = require('discord.js');
-const { User, Ticket, Afk, CustomCommand } = require('./models');
+const { User, Ticket, Afk, CustomCommand, Suggestion, Giveaway } = require('./models');
 const { OWNER_ID, CMD_PREFIX, COLORS } = require('./config');
 const {
   getGuild, addXp, buildWelcomeEmbed, resolveVars,
   checkRaid, checkNuke, makeEmbed, xpForLevel, formatDuration,
 } = require('./utils');
 const { handleCommand, handleInteraction } = require('./commands');
+
+// ─── Profanity / slur filter ─────────────────────────────────────────────────
+const BLOCKED_WORDS = [
+  'nigger','nigga','faggot','fag','chink','spic','kike','gook','wetback',
+  'retard','tranny','cunt','whore','bitch','bastard','asshole','fuck',
+  'shit','damn','piss','cock','dick','pussy','slut','ass',
+];
+function containsBlockedWord(text) {
+  const lower = text.toLowerCase().replace(/[^a-z\s]/g, '');
+  return BLOCKED_WORDS.some(w => lower.split(/\s+/).includes(w) || lower.includes(w));
+}
 
 function registerEvents(client) {
 
@@ -42,7 +53,16 @@ function registerEvents(client) {
         );
       }
 
-      // ── AFK — remove AFK when user sends a message ─────────────────────────
+      // ── Giveaway message requirement tracking ──────────────────────────────
+      const activeGiveaways = await Giveaway.find({ guildId, ended: false, messageRequirement: { $gt: 0 } });
+      for (const giveaway of activeGiveaways) {
+        const tracking = giveaway.msgTracking || {};
+        const current  = tracking[userId] || 0;
+        tracking[userId] = current + 1;
+        await Giveaway.findOneAndUpdate({ giveawayId: giveaway.giveawayId }, { msgTracking: tracking });
+      }
+
+      // ── AFK — remove when user sends a message ─────────────────────────────
       const userAfk = await Afk.findOne({ userId, $or: [{ guildId }, { allGuilds: true }] });
       if (userAfk) {
         const elapsed = Date.now() - new Date(userAfk.createdAt).getTime();
@@ -61,7 +81,6 @@ function registerEvents(client) {
           if (mentionedUser.bot) continue;
           const afkEntry = await Afk.findOne({ userId: mentionedId, $or: [{ guildId }, { allGuilds: true }] });
           if (afkEntry) {
-            const elapsed = Date.now() - new Date(afkEntry.createdAt).getTime();
             message.channel.send({
               embeds: [new EmbedBuilder()
                 .setColor(COLORS.WARNING)
@@ -78,15 +97,14 @@ function registerEvents(client) {
 
         // AFK via prefix
         if (trigger === 'afk') {
-          const parts  = message.content.slice(CMD_PREFIX.length + 'afk'.length).trim();
-          const reason = parts || 'AFK';
+          const reason = message.content.slice(CMD_PREFIX.length + 'afk'.length).trim() || 'AFK';
+          if (containsProfanity(reason)) {
+            return message.reply({ embeds: [makeEmbed({ color: COLORS.ERROR, description: '❌ Your AFK reason contains inappropriate words.' })] });
+          }
           await Afk.deleteMany({ userId, guildId });
           await Afk.create({ userId, guildId, reason, allGuilds: false });
           return message.channel.send({
-            embeds: [new EmbedBuilder()
-              .setColor(COLORS.INFO)
-              .setDescription(`💤 <@${userId}> is now AFK: **${reason}**`)
-            ]
+            embeds: [new EmbedBuilder().setColor(COLORS.INFO).setDescription(`💤 <@${userId}> is now AFK: **${reason}**`)]
           });
         }
 
@@ -115,8 +133,21 @@ function registerEvents(client) {
         );
       }
 
-      // ── XP gain ────────────────────────────────────────────────────────────
+      // ── Giveaway message requirement tracking ──────────────────────────────
+      try {
+        const activeGiveaways = await Giveaway.find({ guildId, ended: false, messageRequirement: { $gt: 0 } });
+        for (const giveaway of activeGiveaways) {
+          await Giveaway.findOneAndUpdate(
+            { giveawayId: giveaway.giveawayId },
+            { $inc: { [`msgTracking.${userId}`]: 1 } }
+          );
+        }
+      } catch {} 
       if (!guildData.levelingEnabled) return;
+
+      // XP blacklisted channels
+      if ((guildData.xpBlacklistedChannels || []).includes(message.channelId)) return;
+
       const coolKey = `${guildId}:${userId}:xp`;
       const lastXp  = xpCooldowns.get(coolKey);
       if (lastXp && Date.now() - lastXp < (guildData.xpCooldown || 60) * 1000) return;
@@ -125,13 +156,20 @@ function registerEvents(client) {
       const { leveledUp, newLevel } = await addXp(userId, guildId, guildData, client);
 
       if (leveledUp && guildData.levelUpMessages) {
-        message.channel.send({
-          embeds: [new EmbedBuilder()
+        // Don't send if this channel is disabled for level up messages
+        if (!(guildData.levelUpDisabledChannels || []).includes(message.channelId)) {
+          const levelUpEmbed = new EmbedBuilder()
             .setColor(COLORS.PRIMARY)
-            .setDescription(`🎉 <@${userId}> just advanced to **Level ${newLevel}**! Keep it up!`)
-            .setFooter({ text: `Use /level to see your full stats` })
-          ]
-        }).catch(() => {});
+            .setDescription(`🎉 <@${userId}> just advanced to **Level ${newLevel}**!`)
+            .setFooter({ text: `Use /level to see your full stats` });
+
+          // Send to dedicated channel if set, else current channel
+          const levelUpChannelId = guildData.levelUpChannelId;
+          const targetChannel    = levelUpChannelId
+            ? message.guild.channels.cache.get(levelUpChannelId)
+            : message.channel;
+          if (targetChannel) targetChannel.send({ embeds: [levelUpEmbed] }).catch(() => {});
+        }
       }
 
       if (leveledUp) {
@@ -142,6 +180,17 @@ function registerEvents(client) {
             guildMember.roles.add(reward.roleId).catch(() => {});
           }
         }
+      }
+
+      // ── Random suggest nudge (2% chance) ───────────────────────────────────
+      if (guildData.suggestionChannelId && Math.random() < 0.02) {
+        message.reply({
+          embeds: [new EmbedBuilder()
+            .setColor(COLORS.INFO)
+            .setDescription(`💡 Got a feature idea or found a bug? Use **/suggest** to share it!`)
+          ],
+          ephemeral: true,
+        }).catch(() => {});
       }
 
     } catch (err) {
