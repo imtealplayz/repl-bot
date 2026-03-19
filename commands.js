@@ -219,6 +219,11 @@ const commandDefs = [
         .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }))
       .addRoleOption(o => o.setName('role').setDescription('Role to add/remove').setRequired(true))),
 
+  new SlashCommandBuilder().setName('temprole').setDescription('Give a user a role temporarily')
+    .addUserOption(o => o.setName('user').setDescription('User to give role to').setRequired(true))
+    .addRoleOption(o => o.setName('role').setDescription('Role to give').setRequired(true))
+    .addStringOption(o => o.setName('duration').setDescription('Duration e.g. 10m 1h 2d').setRequired(true)),
+
   // Welcome
   new SlashCommandBuilder().setName('welcome').setDescription('Set the welcome channel')
     .addChannelOption(o => o.setName('channel').setDescription('Welcome channel').setRequired(true)),
@@ -940,7 +945,52 @@ async function handleCommand(interaction, client) {
     }
   }
 
-  // ── /welcome ───────────────────────────────────────────────────────────────
+  // ── /temprole ──────────────────────────────────────────────────────────────
+  if (commandName === 'temprole') {
+    if (!hasAdmin(member) && !isOwner(user.id)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
+    const target   = interaction.options.getMember('user');
+    const role     = interaction.options.getRole('role');
+    const durStr   = interaction.options.getString('duration');
+    const ms       = parseDuration(durStr);
+    if (!ms) return interaction.reply({ embeds: [errorEmbed('Invalid duration. Use e.g. `10m`, `1h`, `2d`.')], ephemeral: true });
+    if (!target) return interaction.reply({ embeds: [errorEmbed('User not found.')], ephemeral: true });
+    if (!guild.members.me.roles.highest.comparePositionTo(role) > 0) {
+      return interaction.reply({ embeds: [errorEmbed('That role is above my highest role.')], ephemeral: true });
+    }
+    const already = target.roles.cache.has(role.id);
+    if (!already) await target.roles.add(role).catch(() => {});
+    const expiresAt = new Date(Date.now() + ms);
+    await interaction.reply({ embeds: [new EmbedBuilder()
+      .setColor(COLORS.SUCCESS)
+      .setTitle('⏱️ Temp Role Assigned')
+      .addFields(
+        { name: 'User',    value: `<@${target.id}>`, inline: true },
+        { name: 'Role',    value: `<@&${role.id}>`,  inline: true },
+        { name: 'Expires', value: `<t:${Math.floor(expiresAt.getTime()/1000)}:R>`, inline: true },
+      )
+      .setFooter({ text: `Role will be removed automatically` })
+      .setTimestamp()
+    ]});
+    // Schedule removal
+    setTimeout(async () => {
+      try {
+        const freshMember = await guild.members.fetch(target.id).catch(() => null);
+        if (freshMember && freshMember.roles.cache.has(role.id)) {
+          await freshMember.roles.remove(role);
+          // Try to DM the user
+          try {
+            await target.user.send({ embeds: [new EmbedBuilder()
+              .setColor(COLORS.WARNING)
+              .setDescription(`⏱️ Your temporary role **${role.name}** in **${guild.name}** has expired.`)
+            ]});
+          } catch {}
+        }
+      } catch (e) {
+        console.error('Temprole removal error:', e.message);
+      }
+    }, ms);
+    return;
+  }
   if (commandName === 'welcome') {
     if (!hasAdmin(member)) return interaction.reply({ embeds: [errorEmbed('You need Administrator permission.')], ephemeral: true });
     const ch = interaction.options.getChannel('channel');
